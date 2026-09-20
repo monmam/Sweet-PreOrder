@@ -12,6 +12,7 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -24,7 +25,7 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'fallback-secret-key')
 
-# Google API Setup (ใช้ OAuth 2.0 สิทธิ์ทั้ง Sheets และ Drive)
+# Google API Setup (ใช้ OAuth 2.0 / Service Account สิทธิ์ทั้ง Sheets และ Drive)
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
@@ -36,18 +37,39 @@ _cache_time = 0
 CACHE_DURATION = 15  # กำหนดให้จำข้อมูลไว้ 15 วินาที เพื่อลดการเรียก Google Sheets ถี่เกินไป
 
 def get_oauth_creds():
+    # 1. ตรวจสอบว่ามี Environment Variable ของ Service Account บน Render หรือไม่
+    google_creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if google_creds_json:
+        try:
+            creds_dict = json.loads(google_creds_json)
+            return service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        except Exception as e:
+            print("Error loading credentials from Environment Variable:", e)
+
+    # 2. ถ้ารันบน Local ให้ใช้ระบบไฟล์เดิม (token.json / credentials.json)
     creds = None
     if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        except Exception:
+            creds = None
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
+        
+        if not creds:
             if os.path.exists('credentials.json'):
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-                with open('token.json', 'w') as token:
-                    token.write(creds.to_json())
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                    creds = flow.run_local_server(port=0)
+                    with open('token.json', 'w') as token:
+                        token.write(creds.to_json())
+                except Exception:
+                    pass
     return creds
 
 def get_gspread_client():
@@ -89,8 +111,8 @@ def get_sheet(sheet_name):
         try:
             sh = client.open_by_key(sheet_id)
             return sh.worksheet(sheet_name)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error opening sheet {sheet_name}:", e)
     return None
 
 # ฟังก์ชันดึงข้อมูล Orders แบบมี Cache ป้องกัน Error 429
@@ -110,7 +132,7 @@ def get_cached_orders(force_refresh=False):
         except Exception as e:
             print("Error fetching orders:", e)
             if _orders_cache:
-                return _orders_cache # ถ้าติดโควตาหรือเน็ตหลุด ให้ส่งข้อมูลเก่าสำรองไปก่อน
+                return _orders_cache 
     return []
 
 # --- ฟังก์ชัน Auto-Cleanup เคลียร์ออเดอร์ค้าง pending เกิน 10 นาที ---
@@ -139,7 +161,7 @@ def cleanup_pending_orders():
             ws.delete_rows(row_idx)
             
         if rows_to_delete:
-            get_cached_orders(force_refresh=True) # เคลียร์ Cache ทันทีที่มีการลบข้อมูล
+            get_cached_orders(force_refresh=True)
             
     except Exception as e:
         print("Cleanup error:", e)
@@ -300,7 +322,7 @@ def api_create_order():
     ws = get_sheet('Orders')
     if ws:
         ws.append_row(order_row)
-        get_cached_orders(force_refresh=True) # เคลียร์ Cache อัปเดตข้อมูลใหม่ทันที
+        get_cached_orders(force_refresh=True)
         
     return jsonify({'order_id': order_id, 'total': total})
 
@@ -382,22 +404,17 @@ def api_upload_slip():
     if thunder_url and thunder_key:
         try:
             encoded_image = base64.b64encode(file_content).decode('utf-8')
-            
             headers = {
                 'Authorization': f'Bearer {thunder_key}',
                 'Content-Type': 'application/json'
             }
-            
             payload = {
                 'image': encoded_image,
                 'matchAmount': float(expected_amount),
                 'checkDuplicate': True
             }
-            
             resp = requests.post(thunder_url, headers=headers, json=payload, timeout=15)
             res_json = resp.json()
-            
-            print("Thunder API Response:", json.dumps(res_json, ensure_ascii=False, indent=2))
             
             is_success = (
                 res_json.get('success') is True or 
@@ -407,14 +424,8 @@ def api_upload_slip():
             
             if resp.status_code == 200 and is_success:
                 data_field = res_json.get('data', res_json)
+                trans_ref = data_field.get('transRef') or res_json.get('transRef')
                 
-                # 1. ดึงข้อมูลเลขอ้างอิง (TransRef)
-                trans_ref = (
-                    data_field.get('transRef') or 
-                    res_json.get('transRef')
-                )
-                
-                # 2. ดึงยอดเงินที่ชำระ
                 raw_amount = data_field.get('amount', 0)
                 if isinstance(raw_amount, dict):
                     raw_amount = raw_amount.get('amount', 0)
@@ -424,45 +435,31 @@ def api_upload_slip():
                 except (ValueError, TypeError):
                     paid_amount = 0.0
 
-                # 3. ดึงข้อมูลผู้รับ (Receiver) จาก JSON structure ที่ได้มา
                 receiver_info = data_field.get('receiver', {})
                 receiver_account = receiver_info.get('account', {})
-                
                 rcv_name_th = receiver_account.get('name', {}).get('th', '')
                 rcv_name_en = receiver_account.get('name', {}).get('en', '')
-                
-                # เลขพร้อมเพย์ หรือ เลขบัญชีปลายทางที่รับเงิน
                 rcv_proxy = receiver_account.get('proxy', {}).get('account', '')
                 rcv_bank_acc = receiver_account.get('bank', {}).get('account', '')
                 rcv_target_num = rcv_proxy if rcv_proxy else rcv_bank_acc
                 
-                # ข้อมูลร้านค้าจาก Environment Variables
                 shop_number = os.getenv('PROMPTPAY_NUMBER', '').strip()
                 shop_name = os.getenv('SHOP_ACCOUNT_NAME', '').strip()
                 
-                # เริ่มต้นกำหนดให้ผ่านการตรวจสอบเบื้องต้น
                 verified = True
                 
-                # ตรวจสอบเลขบัญชี / พร้อมเพย์ปลายทาง (เนื่องจากสลิปธนาคารมักจะ Masking เป็นตัว x ให้เช็คความถูกต้องส่วนที่ไม่ติด x หรือเทียบเบอร์)
                 if shop_number:
                     clean_shop = shop_number.replace('-', '').strip()
                     clean_rcv = str(rcv_target_num).replace('-', '').strip()
-                    # หากเลขปลายทางในสลิปไม่ตรงกับของร้านเลย (เช่น โอนเข้าคนอื่น) ให้ตีตกทันที
-                    # (ข้ามการเช็คเครื่องหมาย x)
                     shop_digits = ''.join(filter(str.isdigit, clean_shop))
                     rcv_digits = ''.join(filter(str.isdigit, clean_rcv))
                     if shop_digits and rcv_digits:
-                        # ตรวจสอบตัวเลขที่มีร่วมกัน (ป้องกันกรณี Masking บางส่วน)
                         common_digits = sum(1 for a, b in zip(shop_digits[-4:], rcv_digits[-4:]) if a == b)
                         if len(shop_digits) >= 4 and common_digits == 0 and shop_digits not in rcv_digits and rcv_digits not in shop_digits:
                             verified = False
-                            print(f"Validation Failed: Account mismatch. Shop: {shop_digits}, Receiver: {rcv_digits}")
 
-                # ตรวจสอบชื่อบัญชีปลายทาง (รองรับกรณีธนาคารย่อ/ซ่อนนามสกุล)
                 if shop_name and verified:
-                    # ทำความสะอาดคำนำหน้าและช่องว่างเพื่อเทียบชื่อ
                     prefixes = ["นาย", "นาง", "น.ส.", "นางสาว", "mr.", "ms.", "mrs."]
-                    
                     shop_lower = shop_name.lower()
                     rcv_th_lower = rcv_name_th.lower()
                     rcv_en_lower = rcv_name_en.lower()
@@ -477,23 +474,17 @@ def api_upload_slip():
                     
                     name_matched = False
                     if shop_parts and rcv_parts:
-                        # เช็คว่าชื่อจริงตรงกัน และนามสกุลขึ้นต้นด้วยตัวเดียวกัน (เช่น "โภชนา" กับ "โ")
                         first_name_match = shop_parts[0] in rcv_parts[0] or rcv_parts[0] in shop_parts[0]
                         last_name_match = True
                         if len(shop_parts) > 1 and len(rcv_parts) > 1:
                             last_name_match = shop_parts[1][0] == rcv_parts[1][0]
-                            
                         if first_name_match and last_name_match:
                             name_matched = True
                             
-                    # ถ้าระบบอัจฉริยะยังไม่ผ่าน ให้เช็คแบบรวมข้อความแบบยืดหยุ่นอีกชั้น
                     if not name_matched and (shop_name.lower() not in rcv_name_th.lower() and shop_name.lower() not in rcv_name_en.lower()):
-                        # ตรวจสอบกรณีนามสกุลโดนตัดเหลือตัวย่อตัวเดียว
                         short_shop_name = shop_name.split()[0] + " " + shop_name.split()[-1][0] if len(shop_name.split()) > 1 else shop_name
                         if short_shop_name.lower() not in rcv_name_th.lower():
                             verified = False
-                            print(f"Validation Failed: Name mismatch. Shop Name: {shop_name}, Receiver Name: {rcv_name_th} / {rcv_name_en}")
-                        
         except Exception as e:
             print("Slip Verification Error:", e)
             verified = False 
@@ -504,7 +495,6 @@ def api_upload_slip():
         if abs(paid_amount - expected_amount) > 0.05:
             verified = False
 
-    # --- ตรวจสอบความซ้ำซ้อนของ TransRef กับทุกออเดอร์ในระบบแบบเด็ดขาด ---
     if verified and trans_ref and ws_orders:
         for o in orders:
             existing_trans_ref = str(o.get('trans_ref', '')).strip()
@@ -527,12 +517,9 @@ def api_upload_slip():
             ws_orders.update_cell(row_idx, 9, 'confirmed')
             ws_orders.update_cell(row_idx, 10, file_url)
             ws_orders.update_cell(row_idx, 12, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            
             if trans_ref:
                 ws_orders.update_cell(row_idx, 13, str(trans_ref))
-            
             get_cached_orders(force_refresh=True)
-                
         return jsonify({'success': True, 'message': 'Payment verified successfully'})
     else:
         if ws_orders:
@@ -540,7 +527,6 @@ def api_upload_slip():
             if cell:
                 ws_orders.delete_rows(cell.row)
                 get_cached_orders(force_refresh=True)
-            
         return jsonify({
             'success': False, 
             'message': 'ยอดเงินในสลิปไม่ถูกต้อง\nหรือสลิปนี้ถูกใช้งานไปแล้ว\nหรือสลิปไม่ได้โอนเข้าบัญชีร้าน'
@@ -661,17 +647,10 @@ def api_admin_products():
             if folder_id:
                 metadata['parents'] = [folder_id]
             if drive:
-                created = drive.files().create(
-                    body=metadata, 
-                    media_body=media, 
-                    fields='id'
-                ).execute()
+                created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
                 file_id = created.get('id')
                 try:
-                    drive.permissions().create(
-                        fileId=file_id,
-                        body={'role': 'reader', 'type': 'anyone'}
-                    ).execute()
+                    drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
                 except Exception:
                     pass
                 image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
@@ -683,13 +662,11 @@ def api_admin_products():
 
     elif request.method == 'PUT':
         prod_id = (
-            request.form.get('id') or 
-            request.form.get('product_id') or 
+            request.form.get('id') or request.form.get('product_id') or 
             request.args.get('id') or 
             (request.json.get('id') if request.is_json else None) or
             (request.json.get('product_id') if request.is_json else None)
         )
-        
         if not prod_id:
             return jsonify({'error': 'Missing product id'}), 400
 
@@ -728,7 +705,6 @@ def api_admin_products():
                         old_file_id = current_image.split('/d/')[-1].split('/')[0].split('?')[0]
                     elif 'id=' in current_image:
                         old_file_id = current_image.split('id=')[-1].split('&')[0]
-                    
                     if old_file_id and drive:
                         try:
                             drive.files().delete(fileId=old_file_id).execute()
@@ -742,17 +718,10 @@ def api_admin_products():
                 if folder_id:
                     metadata['parents'] = [folder_id]
                 if drive:
-                    created = drive.files().create(
-                        body=metadata, 
-                        media_body=media, 
-                        fields='id'
-                    ).execute()
+                    created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
                     file_id = created.get('id')
                     try:
-                        drive.permissions().create(
-                            fileId=file_id,
-                            body={'role': 'reader', 'type': 'anyone'}
-                        ).execute()
+                        drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
                     except Exception:
                         pass
                     image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
@@ -801,7 +770,6 @@ def api_admin_products():
                     file_id = image_url.split('/d/')[-1].split('/')[0].split('?')[0]
                 elif 'id=' in image_url:
                     file_id = image_url.split('id=')[-1].split('&')[0]
-                
                 if file_id:
                     drive = get_drive_service()
                     if drive:
@@ -816,24 +784,20 @@ def api_admin_products():
 def api_admin_categories():
     if not session.get('admin_logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
-    
     ws = get_sheet('Categories')
     if not ws:
         return jsonify({'error': 'Sheet not found'}), 500
         
     if request.method == 'GET':
         return jsonify(ws.get_all_records())
-        
     elif request.method == 'POST':
         data = request.json
         name = data.get('name')
         if not name:
             return jsonify({'success': False, 'message': 'Missing category name'}), 400
-            
         cat_id = f"CAT-{int(datetime.now().timestamp())}"
         ws.append_row([cat_id, name])
         return jsonify({'success': True})
-        
     elif request.method == 'DELETE':
         data = request.json
         cat_id = data.get('id')
@@ -850,7 +814,6 @@ def api_admin_orders():
         
     if request.method == 'GET':
         return jsonify(get_cached_orders())
-        
     elif request.method == 'PUT':
         data = request.json
         order_id = data.get('order_id')
@@ -880,14 +843,12 @@ def api_admin_delivery_times():
     elif request.method == 'POST':
         data = request.json
         time_val = data.get('time')
-        
         if time_val and ':' in str(time_val):
             parts = str(time_val).split(':')
             if len(parts) == 2:
                 hour = parts[0].zfill(2)
                 minute = parts[1].zfill(2)
                 time_val = f"'{hour}:{minute}"
-
         status = data.get('status', 'active')
         t_id = f"TIME-{int(datetime.now().timestamp())}"
         ws.append_row([t_id, time_val, status])
@@ -916,7 +877,6 @@ def api_admin_reports():
         
     period = request.args.get('period', 'today')
     orders = get_cached_orders()
-    
     today = datetime.now().date()
     filtered_orders = []
     
@@ -935,7 +895,6 @@ def api_admin_reports():
 
     chart_labels = []
     chart_data = []
-    
     if period == 'today':
         chart_labels = ['วันนี้']
         chart_data = [total_sales]
