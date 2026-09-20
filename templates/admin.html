@@ -619,6 +619,23 @@
         let salesChartInstance = null;
         let reportChartInstance = null;
 
+        // ฟังก์ชันตรวจสอบสถานะ Login เมื่อโหลดหน้าเว็บ
+        async function checkAuth() {
+            try {
+                let res = await fetch('/api/admin/check-auth');
+                let data = await res.json();
+                if (!data.authenticated) {
+                    document.getElementById('loginOverlay').classList.remove('hidden');
+                } else {
+                    document.getElementById('loginOverlay').classList.add('hidden');
+                    loadDashboardData();
+                }
+            } catch (e) {
+                // หากระบบ Backend ยังไม่เปิดตรวจสอบ session ให้เปิดหน้า Login ไว้ก่อนเพื่อความปลอดภัย
+                document.getElementById('loginOverlay').classList.remove('hidden');
+            }
+        }
+
         function previewImage(input) {
             const preview = document.getElementById('imagePreview');
             if (input.files && input.files[0]) {
@@ -1345,7 +1362,8 @@
             if(res.ok) loadDeliveryTimes();
         }
 
-        loadDashboardData();
+        // เริ่มต้นการทำงานโดยตรวจสอบการเข้าสู่ระบบ
+        checkAuth();
     </script>
 </body>
 </html>
