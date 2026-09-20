@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sweet PreOrder - สั่งอาหารอร่อยๆ</title>
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #FF6B8B;           
+            --primary-hover: #FF5277;     
+            --primary-light: #FFF0F3;     
+            --bg-color: #F7F9FC;          
+            --card-bg: #FFFFFF;
+            --text-main: #1A202C;         
+            --text-muted: #718096;        
+            --border-color: #E2E8F0;      
+            --border-radius: 20px;
+            --shadow-soft: 0 10px 30px -5px rgba(0, 0, 0, 0.04);
+            --shadow-hover: 0 20px 40px -10px rgba(255, 107, 139, 0.2);
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Prompt', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background-color: var(--bg-color); color: var(--text-main); display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden; position: relative; }
+        
+        /* Modern Glassmorphism Header */
+        header { 
+            background: rgba(255, 255, 255, 0.9); 
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 12px 20px; 
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02); 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            position: sticky; 
+            top: 0; 
+            z-index: 100; 
+            border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .logo-area { display: flex; align-items: center; gap: 10px; }
+        .logo-icon { width: 38px; height: 38px; background: var(--primary-light); color: var(--primary); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
+        .logo-area h1 { font-size: 1.2rem; font-weight: 700; color: var(--text-main); letter-spacing: -0.5px; white-space: nowrap; }
+        .logo-area h1 span { color: var(--primary); }
+        
+        .nav-links { display: flex; gap: 4px; align-items: center; background: #EDF2F7; padding: 4px; border-radius: 14px; overflow-x: auto; max-width: 100%; }
+        .nav-links::-webkit-scrollbar { display: none; }
+        .nav-links button { background: none; border: none; font-size: 0.85rem; cursor: pointer; color: var(--text-muted); font-weight: 500; padding: 6px 12px; border-radius: 10px; transition: var(--transition); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+        .nav-links button.active { background: white; color: var(--primary); font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .nav-links button:hover:not(.active) { color: var(--text-main); }
+        
+        main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px 16px; position: relative; z-index: 2; }
+        
+        /* Global Background Floating Cooking Icons */
+        .global-floating-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; overflow: hidden; }
+        .f-icon {
+            position: absolute;
+            opacity: 0.15;
+            animation: floatAnim 6s ease-in-out infinite;
+        }
+        .f-icon:nth-child(1) { top: 12%; left: 5%; font-size: 2.8rem; animation-duration: 7s; }
+        .f-icon:nth-child(2) { top: 25%; right: 6%; font-size: 3.2rem; animation-duration: 5.5s; animation-delay: 1s; }
+        .f-icon:nth-child(3) { top: 50%; left: 4%; font-size: 2.5rem; animation-duration: 8s; animation-delay: 2s; }
+        .f-icon:nth-child(4) { top: 65%; right: 7%; font-size: 3rem; animation-duration: 6s; animation-delay: 1.5s; }
+        .f-icon:nth-child(5) { top: 82%; left: 8%; font-size: 2.6rem; animation-duration: 6.5s; animation-delay: 0.5s; }
+
+        @keyframes floatAnim {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            50% { transform: translateY(-12px) rotate(10deg); }
+        }
+
+        /* Fresh Hero Banner */
+        .hero { 
+            background: linear-gradient(135deg, #FF8E9E 0%, #FF6B8B 100%); 
+            color: white; 
+            padding: 32px 24px; 
+            border-radius: var(--border-radius); 
+            margin-bottom: 24px; 
+            box-shadow: var(--shadow-hover); 
+            position: relative; 
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .hero-content { position: relative; z-index: 2; }
+        .hero h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px; line-height: 1.3; }
+        .hero p { opacity: 0.95; font-size: 0.9rem; max-width: 550px; font-weight: 300; line-height: 1.5; }
+
+        /* Category Chips with Icons */
+        .category-chips { display: flex; gap: 10px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+        .category-chips::-webkit-scrollbar { display: none; }
+        .chip { background: white; border: 1.5px solid var(--border-color); padding: 8px 16px; border-radius: 12px; font-size: 0.85rem; font-weight: 500; color: var(--text-muted); cursor: pointer; transition: var(--transition); white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.02); display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+        .chip.active, .chip:hover { background: var(--primary); color: white; border-color: var(--primary); box-shadow: 0 6px 16px rgba(255, 107, 139, 0.25); transform: translateY(-2px); }
+
+        .section-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 16px; color: var(--text-main); letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
+        
+        /* Food Grid & Cards */
+        .food-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 32px; }
+        .food-card { background: var(--card-bg); border-radius: var(--border-radius); overflow: hidden; box-shadow: var(--shadow-soft); display: flex; flex-direction: column; transition: var(--transition); border: 1px solid rgba(226, 232, 240, 0.8); position: relative; z-index: 2; }
+        .food-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-hover); border-color: rgba(255, 107, 139, 0.3); }
+        .food-img-container { width: 100%; height: 160px; overflow: hidden; background: #EDF2F7; position: relative; }
+        .food-img { width: 100%; height: 100%; object-fit: cover; transition: var(--transition); }
+        .food-card:hover .food-img { transform: scale(1.04); }
+        
+        .food-info { padding: 16px; display: flex; flex-direction: column; flex: 1; justify-content: space-between; }
+        .food-name { font-size: 1rem; font-weight: 600; margin-bottom: 4px; color: var(--text-main); }
+        .food-desc { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .food-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 12px; }
+        .food-price { font-size: 1.1rem; font-weight: 700; color: var(--primary); }
+        
+        .btn-add { background: var(--primary-light); color: var(--primary); border: none; padding: 6px 12px; border-radius: 10px; cursor: pointer; font-weight: 600; transition: var(--transition); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+        .btn-add:hover { background: var(--primary); color: white; box-shadow: 0 4px 12px rgba(255, 107, 139, 0.3); }
+
+        /* Cart Section & Forms */
+        .cart-section { background: var(--card-bg); border-radius: var(--border-radius); padding: 20px; box-shadow: var(--shadow-soft); margin-bottom: 32px; border: 1px solid rgba(226, 232, 240, 0.8); position: relative; z-index: 2; }
+        .cart-item { display: flex; justify-content: space-between; align-items: flex-start; padding: 14px 0; border-bottom: 1px solid var(--border-color); gap: 12px; flex-wrap: wrap; }
+        .cart-total { display: flex; justify-content: space-between; font-size: 1.2rem; font-weight: 700; margin: 20px 0; color: var(--text-main); }
+        
+        .btn-checkout { width: 100%; background: var(--primary); color: white; border: none; padding: 14px; border-radius: 14px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: var(--transition); box-shadow: 0 6px 16px rgba(255, 107, 139, 0.3); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn-checkout:hover { background: var(--primary-hover); transform: translateY(-2px); box-shadow: 0 10px 22px rgba(255, 107, 139, 0.4); }
+
+        .form-group { margin-bottom: 16px; text-align: left; }
+        .form-group label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.85rem; color: var(--text-main); }
+        .form-group input, .form-group select { width: 100%; padding: 12px 16px; border: 1.5px solid var(--border-color); border-radius: 12px; font-size: 0.9rem; outline: none; transition: var(--transition); background: #F8F9FA; color: var(--text-main); -webkit-appearance: none; appearance: none; }
+        .form-group input:focus, .form-group select:focus { border-color: var(--primary); background: #FFFFFF; box-shadow: 0 0 0 4px var(--primary-light); }
+
+        /* Time Slots Grid */
+        .time-slots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .time-slot-btn {
+            background: #F8F9FA;
+            border: 1.5px solid var(--border-color);
+            padding: 10px 8px;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-main);
+            cursor: pointer;
+            transition: var(--transition);
+            text-align: center;
+        }
+        .time-slot-btn:hover {
+            border-color: var(--primary);
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        .time-slot-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+            box-shadow: 0 4px 12px rgba(255, 107, 139, 0.3);
+            font-weight: 600;
+        }
+
+        /* Modals */
+        .modal { 
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(26, 32, 44, 0.65); backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            justify-content: center; align-items: center; z-index: 1000; padding: 16px; 
+            animation: fadeIn 0.25s ease;
+            overflow-y: auto;
+        }
+        .modal-content { 
+            background: var(--card-bg); padding: 0; border-radius: 28px; 
+            width: 100%; max-width: 420px; box-shadow: 0 25px 60px rgba(0,0,0,0.2); 
+            text-align: left; position: relative; border: 1px solid rgba(255, 255, 255, 0.8);
+            transform: scale(0.95); animation: scaleUp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
+            margin: auto;
+        }
+        
+        .modal-header-img { width: 100%; height: 180px; background: #EDF2F7; position: relative; flex-shrink: 0; }
+        .modal-header-img img { width: 100%; height: 100%; object-fit: cover; }
+        .modal-header-img::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0; height: 40px;
+            background: linear-gradient(to top, rgba(0,0,0,0.2), transparent);
+        }
+        
+        .modal-body-content { padding: 24px; overflow-y: auto; scrollbar-width: none; flex: 1; -webkit-overflow-scrolling: touch; }
+        .modal-body-content::-webkit-scrollbar { display: none; }
+
+        .close-btn { 
+            position: absolute; top: 14px; right: 14px; background: rgba(255, 255, 255, 0.95); border: none; 
+            width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: 1.2rem; cursor: pointer; color: var(--text-main); transition: var(--transition);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12); z-index: 20;
+        }
+        .close-btn:hover { background: var(--primary); color: white; transform: rotate(90deg); }
+
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes scaleUp { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+        #alertModal .modal-content { max-width: 340px; padding: 28px 20px; text-align: center; display: block; border-radius: 24px; }
+
+        @keyframes bounceIcon {
+            0% { transform: scale(0.4); opacity: 0; }
+            60% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes drawCheck {
+            0% { stroke-dashoffset: 24; }
+            100% { stroke-dashoffset: 0; }
+        }
+        .animate-icon { animation: bounceIcon 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        .animate-check { stroke-dasharray: 24; stroke-dashoffset: 24; animation: drawCheck 0.35s ease 0.25s forwards; }
+
+        .qr-box { 
+            margin: 16px 0; background: #FFFFFF; padding: 16px; border-radius: 20px; 
+            border: 2px dashed rgba(255, 107, 139, 0.4); box-shadow: 0 8px 24px rgba(0,0,0,0.03);
+            display: inline-block; text-align: center; width: 100%; 
+        }
+        .qr-box img { width: 190px; height: 190px; object-fit: contain; display: block; margin: 0 auto; border-radius: 12px; }
+        .hidden { display: none !important; }
+
+        .option-group-title { font-weight: 600; text-align: left; margin: 16px 0 8px 0; font-size: 0.95rem; color: var(--text-main); display: flex; align-items: center; gap: 6px; }
+        .option-options-list { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+        
+        .option-label { 
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 0.9rem; cursor: pointer; padding: 10px 14px; border-radius: 12px; 
+            border: 1.5px solid var(--border-color); background: #F8F9FA; transition: var(--transition); 
+        }
+        .option-label:hover { border-color: var(--primary); background: var(--primary-light); }
+        .option-label input { accent-color: var(--primary); width: 18px; height: 18px; cursor: pointer; }
+        
+        input[type="file"]::file-selector-button {
+            background: var(--primary-light); color: var(--primary); border: none;
+            padding: 8px 14px; border-radius: 8px; font-weight: 600; font-family: 'Prompt', sans-serif;
+            cursor: pointer; transition: var(--transition); margin-right: 10px;
+        }
+        input[type="file"]::file-selector-button:hover { background: var(--primary); color: white; }
+
+        @media (max-width: 767px) {
+            header {
+                position: fixed !important; top: 0 !important; left: 0; right: 0; width: 100%;
+                background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+                padding: 10px 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03); z-index: 1000;
+                display: flex; justify-content: center; align-items: center;
+            }
+            header .nav-links { display: none !important; }
+            .logo-area { display: flex !important; align-items: center; gap: 8px; }
+
+            .mobile-bottom-nav {
+                position: fixed !important; bottom: 0 !important; left: 0; right: 0; width: 100%;
+                background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px); border-top: 1px solid rgba(226, 232, 240, 0.8);
+                padding: 8px 12px; box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.05); z-index: 1000;
+                display: flex; justify-content: space-around; align-items: center;
+            }
+            .mobile-bottom-nav button {
+                flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                gap: 2px; font-size: 0.7rem; padding: 6px 2px; border-radius: 8px; background: transparent;
+                border: none; white-space: nowrap; color: var(--text-muted); cursor: pointer;
+            }
+            .mobile-bottom-nav button svg { width: 20px; height: 20px; }
+            body { padding-top: 60px !important; padding-bottom: 80px !important; }
+        }
+
+        @media (min-width: 768px) {
+            .mobile-bottom-nav { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ไอคอนทำอาหารลอยได้บนพื้นหลัง -->
+    <div class="global-floating-bg">
+        <span class="f-icon">🍜</span>
+        <span class="f-icon">🍳</span>
+        <span class="f-icon">🔥</span>
+        <span class="f-icon">🍲</span>
+        <span class="f-icon">🍕</span>
+    </div>
+
+    <header>
+        <div class="logo-area">
+            <div class="logo-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 12h20"></path>
+                    <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"></path>
+                    <path d="M12 5V2"></path>
+                    <path d="M8 5a4 4 0 0 0 8 0"></path>
+                </svg>
+            </div>
+            <h1>Sweet <span>PreOrder</span></h1>
+        </div>
+        <div class="nav-links">
+            <button onclick="switchTab('menu')" id="navMenu" class="active">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                เมนูอาหาร
+            </button>
+            <button onclick="switchTab('cart')" id="navCart">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                ตะกร้า (<span id="cartCount">0</span>)
+            </button>
+            <button onclick="switchTab('status')" id="navStatus">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                สถานะออเดอร์
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <!-- MENU TAB -->
+        <div id="tabMenu">
+            <div class="hero">
+                <div class="hero-content">
+                    <h2>สั่งอาหารอร่อยๆ ส่งตรงถึงที่คุณ</h2>
+                    <p>เลือกเมนูโปรด ชำระเงินง่ายผ่าน QR Code แล้วรอรับความฟินได้เลยค่า 💖</p>
+                </div>
+            </div>
+
+            <div class="category-chips" id="categoryChips">
+                <div class="chip active" onclick="filterCategory('ทั้งหมด', this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                    ทั้งหมด
+                </div>
+            </div>
+
+            <div class="section-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                เมนูแนะนำวันนี้
+            </div>
+            <div class="food-grid" id="foodGrid"></div>
+        </div>
+
+        <!-- CART TAB -->
+        <div id="tabCart" class="hidden">
+            <div class="section-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                ตะกร้าสินค้าของคุณ
+            </div>
+            <div class="cart-section">
+                <div id="cartItemsList">
+                    <p style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ตะกร้ายังว่างอยู่เลยน้า</p>
+                </div>
+                <div class="cart-total">
+                    <span>ยอดรวมทั้งหมด</span>
+                    <span id="cartTotalPrice" style="color: var(--primary);">฿0</span>
+                </div>
+                
+                <div id="checkoutFormSection" class="hidden" style="margin-top: 24px; border-top: 1px solid var(--border-color); padding-top: 24px;">
+                    <div class="section-title" style="font-size: 1.05rem; margin-bottom: 16px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                        ข้อมูลการจัดส่ง
+                    </div>
+                    <div class="form-group">
+                        <label>ชื่อ-นามสกุล</label>
+                        <input type="text" id="custName" placeholder="กรอกชื่อของคุณ">
+                    </div>
+                    <div class="form-group">
+                        <label>เบอร์โทรศัพท์</label>
+                        <input type="tel" id="custPhone" placeholder="0812345678">
+                    </div>
+                    <div class="form-group">
+                        <label>วันที่ต้องการรับอาหาร</label>
+                        <input type="date" id="custDate">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>เวลาที่ต้องการรับอาหาร</label>
+                        <input type="hidden" id="custTime" value="">
+                        <div id="timeSlotsContainer" class="time-slots-grid"></div>
+                    </div>
+
+                    <button class="btn-checkout" onclick="submitOrder()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        ยืนยันออเดอร์ & ไปชำระเงิน
+                    </button>
+                </div>
+                
+                <button id="btnProceedCheckout" class="btn-checkout" onclick="showCheckoutForm()">
+                    ไปกรอกข้อมูลจัดส่ง 
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- STATUS TAB -->
+        <div id="tabStatus" class="hidden">
+            <div class="section-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                ตรวจสอบสถานะออเดอร์
+            </div>
+            <div class="cart-section">
+                <div class="form-group">
+                    <label>กรอก Order ID (เช่น ORD-0001)</label>
+                    <input type="text" id="searchOrderId" placeholder="ORD-XXXX">
+                </div>
+                <button class="btn-checkout" onclick="checkOrderStatus()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    ค้นหาออเดอร์
+                </button>
+                <div id="orderStatusResult" style="margin-top: 20px;"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Mobile Bottom Nav -->
+    <div class="mobile-bottom-nav">
+        <button onclick="switchTab('menu')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+            <span>เมนูอาหาร</span>
+        </button>
+        <button onclick="switchTab('cart')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+            <span>ตะกร้า (<span id="mobileCartCount">0</span>)</span>
+        </button>
+        <button onclick="switchTab('status')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            <span>สถานะออเดอร์</span>
+        </button>
+    </div>
+
+    <!-- OPTIONS MODAL -->
+    <div class="modal" id="optionsModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+            <div class="modal-header-img">
+                <img id="optFoodImage" src="" alt="Food Image">
+            </div>
+            <div class="modal-body-content">
+                <div id="optFoodName" style="font-weight: 700; font-size: 1.2rem; color: var(--text-main); margin-bottom: 2px;">เลือกรายละเอียดอาหาร</div>
+                <div style="color: var(--primary); font-weight: 700; font-size: 1.1rem; margin-bottom: 16px;" id="optFoodPrice">ราคา ฿0</div>
+                
+                <div id="dynamicOptionsContainer"></div>
+
+                <div class="form-group" style="margin-top: 18px;">
+                    <label style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); margin-bottom: 6px; display: block;">📝 โน้ต / รายละเอียดเพิ่มเติม</label>
+                    <input type="text" id="optCustomNote" placeholder="เช่น ไข่ดาวไม่สุก, เผ็ดน้อยมากๆ">
+                </div>
+
+                <button class="btn-checkout" id="modalConfirmBtn" style="margin-top: 20px;" onclick="confirmAddToCart()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                    ยืนยันเพิ่มลงตะกร้า
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAYMENT MODAL -->
+    <div class="modal" id="paymentModal">
+        <div class="modal-content" style="padding: 28px 24px; text-align: center; display: block;">
+            <button class="close-btn" onclick="closeModal()">&times;</button>
+            
+            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; color: var(--primary);">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>
+                <span style="font-size: 1.15rem; font-weight: 700; color: var(--text-main);">สแกนจ่าย PromptPay</span>
+            </div>
+            
+            <p id="modalOrderId" style="font-weight: 500; color: var(--text-muted); font-size: 0.85rem; margin-top: 2px;"></p>
+            <p style="font-size: 1.8rem; font-weight: 700; color: var(--primary); margin: 8px 0 4px 0;" id="modalAmount">฿0</p>
+            
+            <div class="qr-box">
+                <img id="qrImage" src="" alt="PromptPay QR">
+                <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 10px;">สแกนผ่านแอปธนาคารของคุณได้เลย</p>
+            </div>
+            
+            <div class="form-group" style="text-align: left; margin-bottom: 20px;">
+                <label style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); margin-bottom: 6px;">แนบสลิปโอนเงิน</label>
+                <input type="file" id="slipFile" accept="image/png, image/jpeg, image/jpg" style="padding: 8px; background: #F8F9FA;">
+            </div>
+
+            <button class="btn-checkout" id="btnSubmitSlip" onclick="uploadSlip()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                ยืนยันการชำระเงิน
+            </button>
+        </div>
+    </div>
+
+    <!-- SUCCESS MODAL -->
+    <div class="modal" id="successModal">
+        <div class="modal-content" style="padding: 28px; text-align: center; display: block;">
+            <div style="width: 60px; height: 60px; background: var(--primary-light); color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 14px auto;">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            </div>
+            <div class="section-title" style="margin-bottom: 6px; justify-content: center;">สั่งซื้อสำเร็จแล้วค่า!</div>
+            <p id="successOrderInfo" style="margin-bottom: 20px; color: var(--text-muted); font-size: 0.9rem;"></p>
+            <button class="btn-checkout" onclick="location.reload()">กลับสู่หน้าแรก</button>
+        </div>
+    </div>
+
+    <!-- CUSTOM ALERT POPUP -->
+    <div class="modal" id="alertModal">
+        <div class="modal-content">
+            <div class="animate-icon" style="width: 48px; height: 48px; background: var(--primary-light); color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px auto;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="9" cy="21" r="1"></circle>
+                    <circle cx="20" cy="21" r="1"></circle>
+                    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+                    <path class="animate-check" d="M16 11l2 2 4-4" stroke-width="2.5"></path>
+                </svg>
+            </div>
+            <div class="section-title" id="alertTitle" style="margin-bottom: 4px; font-size: 1rem; justify-content: center;">แจ้งเตือนระบบ</div>
+            <p id="alertMessage" style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px; line-height: 1.4; text-align: center;"></p>
+            <button class="btn-checkout" onclick="closeAlertModal()">ตกลง</button>
+        </div>
+    </div>
+
+    <script>
+        let cart = [];
+        let allProducts = [];
+        let currentCategory = 'ทั้งหมด';
+        let currentOrderId = '';
+        let currentTotal = 0;
+        let selectedProductForOptions = null;
+        let editingCartIndex = -1;
+        let isSubmittingSlip = false; // ตัวแปรป้องกันการกดซ้ำ
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCategories();
+            loadProducts();
+            loadDeliveryTimes();
+            document.getElementById('custDate').valueAsDate = new Date();
+        });
+
+        function showAlert(message, title = "แจ้งเตือนระบบ") {
+            document.getElementById('alertTitle').innerText = title;
+            document.getElementById('alertMessage').innerText = message;
+            document.getElementById('alertModal').style.display = 'flex';
+        }
+
+        function closeAlertModal() {
+            document.getElementById('alertModal').style.display = 'none';
+        }
+
+        function switchTab(tabName) {
+            ['Menu', 'Cart', 'Status'].forEach(t => {
+                document.getElementById('tab' + t).classList.add('hidden');
+                let navEl = document.getElementById('nav' + t);
+                if(navEl) navEl.classList.remove('active');
+            });
+            document.getElementById('tab' + capitalize(tabName)).classList.remove('hidden');
+            let activeNav = document.getElementById('nav' + capitalize(tabName));
+            if(activeNav) activeNav.classList.add('active');
+            if(tabName === 'cart') renderCart();
+        }
+
+        function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+        async function loadCategories() {
+            try {
+                let res = await fetch('/api/categories');
+                let categories = await res.json();
+                let container = document.getElementById('categoryChips');
+                container.innerHTML = `
+                    <div class="chip active" onclick="filterCategory('ทั้งหมด', this)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                        ทั้งหมด
+                    </div>
+                `;
+                
+                categories.forEach(c => {
+                    container.innerHTML += `
+                        <div class="chip" onclick="filterCategory('${c.name}', this)">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>
+                            ${c.name}
+                        </div>
+                    `;
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadProducts() {
+            try {
+                let res = await fetch('/api/products');
+                allProducts = await res.json();
+                renderProducts(allProducts);
+            } catch(e) { console.error(e); }
+        }
+
+        function filterCategory(category, element) {
+            currentCategory = category;
+            document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+            element.classList.add('active');
+
+            if(category === 'ทั้งหมด') {
+                renderProducts(allProducts);
+            } else {
+                let filtered = allProducts.filter(p => p.category === category);
+                renderProducts(filtered);
+            }
+        }
+
+        function renderProducts(products) {
+            let grid = document.getElementById('foodGrid');
+            grid.innerHTML = '';
+            
+            if(products.length === 0) {
+                grid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ยังไม่มีเมนูในหมวดหมู่นี้จ้า</p>';
+                return;
+            }
+
+            products.forEach(p => {
+                grid.innerHTML += `
+                    <div class="food-card">
+                        <div class="food-img-container">
+                            <img class="food-img" src="${p.image || 'https://via.placeholder.com/300x160?text=Food'}" alt="${p.name}" loading="lazy">
+                        </div>
+                        <div class="food-info">
+                            <div>
+                                <div class="food-name">${p.name}</div>
+                                <div class="food-desc">${p.description || ''}</div>
+                            </div>
+                            <div class="food-footer">
+                                <div class="food-price">฿${p.price}</div>
+                                <button class="btn-add" onclick='openOptionsModal(${JSON.stringify(p)})'>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                    เพิ่ม
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        async function loadDeliveryTimes() {
+            try {
+                let res = await fetch('/api/delivery-times');
+                let times = await res.json();
+                let container = document.getElementById('timeSlotsContainer');
+                container.innerHTML = '';
+                
+                times.forEach((t) => {
+                    let btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'time-slot-btn';
+                    btn.innerText = t.time;
+                    btn.onclick = () => selectTimeSlot(t.time, btn);
+                    container.appendChild(btn);
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        function selectTimeSlot(timeStr, element) {
+            document.querySelectorAll('.time-slot-btn').forEach(b => b.classList.remove('active'));
+            element.classList.add('active');
+            document.getElementById('custTime').value = timeStr;
+        }
+
+        function openOptionsModal(product, editIndex = -1) {
+            selectedProductForOptions = product;
+            editingCartIndex = editIndex;
+
+            document.getElementById('optFoodName').innerText = product.name;
+            document.getElementById('optFoodPrice').innerText = `ราคาพื้นฐาน ฿${product.price}`;
+            
+            let imgElement = document.getElementById('optFoodImage');
+            imgElement.src = product.image || 'https://via.placeholder.com/300x160?text=Food';
+
+            let noteInput = document.getElementById('optCustomNote');
+            if (editingCartIndex > -1 && cart[editingCartIndex]) {
+                noteInput.value = cart[editingCartIndex].customNote || '';
+            } else {
+                noteInput.value = '';
+            }
+
+            let confirmBtn = document.getElementById('modalConfirmBtn');
+            confirmBtn.innerHTML = editingCartIndex > -1 ? 
+                `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg> บันทึกการแก้ไข` : 
+                `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg> ยืนยันเพิ่มลงตะกร้า`;
+
+            let container = document.getElementById('dynamicOptionsContainer');
+            container.innerHTML = '';
+
+            let parsedOptions = product.options;
+            if (typeof parsedOptions === 'string') {
+                try { parsedOptions = JSON.parse(parsedOptions); } catch (e) { parsedOptions = []; }
+            }
+
+            let existingOptionsArray = editingCartIndex > -1 && cart[editingCartIndex] ? cart[editingCartIndex].selectedOptionsArray || [] : [];
+
+            if (parsedOptions && Array.isArray(parsedOptions) && parsedOptions.length > 0) {
+                parsedOptions.forEach((optGroup, groupIndex) => {
+                    let groupHtml = `<div class="option-group-title">🔸 ${optGroup.title || 'ตัวเลือก'}</div>`;
+                    groupHtml += `<div class="option-options-list">`;
+
+                    let inputType = optGroup.type === 'checkbox' ? 'checkbox' : 'radio';
+                    let inputName = `optGroup_${groupIndex}`;
+
+                    if (optGroup.choices && Array.isArray(optGroup.choices)) {
+                        optGroup.choices.forEach((choice, choiceIndex) => {
+                            let priceText = choice.price > 0 ? ` (+${choice.price} ฿)` : '';
+                            let isChecked = editingCartIndex > -1 ? existingOptionsArray.includes(choice.name) : (choiceIndex === 0 && inputType === 'radio');
+                            
+                            groupHtml += `
+                                <label class="option-label">
+                                    <span>${choice.name} <strong style="color: var(--primary);">${priceText}</strong></span>
+                                    <input type="${inputType}" name="${inputName}" value="${choice.name}" data-price="${choice.price || 0}" ${isChecked ? 'checked' : ''}>
+                                </label>
+                            `;
+                        });
+                    }
+                    groupHtml += `</div>`;
+                    container.innerHTML += groupHtml;
+                });
+            } else {
+                container.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">เมนูนี้ไม่มีตัวเลือกเพิ่มเติม</p>';
+            }
+
+            document.getElementById('optionsModal').style.display = 'flex';
+        }
+
+        function editCartItem(index) {
+            let cartItem = cart[index];
+            let product = allProducts.find(p => p.id === cartItem.id) || allProducts.find(p => p.name === cartItem.name);
+            if (product) openOptionsModal(product, index);
+            else showAlert('ไม่พบข้อมูลเมนูนี้ในระบบปัจจุบัน');
+        }
+
+        function confirmAddToCart() {
+            if (!selectedProductForOptions) return;
+
+            let selectedOptionsText = [];
+            let selectedOptionsArray = [];
+            let extraPrice = 0;
+
+            let parsedOptions = selectedProductForOptions.options;
+            if (typeof parsedOptions === 'string') {
+                try { parsedOptions = JSON.parse(parsedOptions); } catch (e) { parsedOptions = []; }
+            }
+
+            if (parsedOptions && Array.isArray(parsedOptions)) {
+                parsedOptions.forEach((optGroup, groupIndex) => {
+                    let inputName = `optGroup_${groupIndex}`;
+                    if (optGroup.type === 'checkbox') {
+                        document.querySelectorAll(`input[name="${inputName}"]:checked`).forEach(cb => {
+                            selectedOptionsText.push(cb.value);
+                            selectedOptionsArray.push(cb.value);
+                            extraPrice += parseFloat(cb.dataset.price || 0);
+                        });
+                    } else {
+                        let selectedRadio = document.querySelector(`input[name="${inputName}"]:checked`);
+                        if (selectedRadio) {
+                            selectedOptionsText.push(selectedRadio.value);
+                            selectedOptionsArray.push(selectedRadio.value);
+                            extraPrice += parseFloat(selectedRadio.dataset.price || 0);
+                        }
+                    }
+                });
+            }
+
+            let customNote = document.getElementById('optCustomNote').value.trim();
+            if (customNote) selectedOptionsText.push(`โน้ต: ${customNote}`);
+
+            let finalPrice = parseFloat(selectedProductForOptions.price) + extraPrice;
+            let optionsTextStr = selectedOptionsText.length > 0 ? selectedOptionsText.join(', ') : 'ธรรมดา';
+            let cartKey = `${selectedProductForOptions.id}_${selectedOptionsText.sort().join('_')}_${customNote}`;
+
+            if (editingCartIndex > -1) {
+                cart[editingCartIndex].options = optionsTextStr;
+                cart[editingCartIndex].selectedOptionsArray = selectedOptionsArray;
+                cart[editingCartIndex].customNote = customNote;
+                cart[editingCartIndex].price = finalPrice;
+                editingCartIndex = -1;
+                showAlert('แก้ไขรายการในตะกร้าเรียบร้อยแล้ว');
+            } else {
+                let found = cart.find(item => item.cartKey === cartKey);
+                if (found) {
+                    found.qty += 1;
+                } else {
+                    cart.push({
+                        cartKey: cartKey,
+                        id: selectedProductForOptions.id,
+                        name: selectedProductForOptions.name,
+                        basePrice: parseFloat(selectedProductForOptions.price),
+                        price: finalPrice,
+                        options: optionsTextStr,
+                        selectedOptionsArray: selectedOptionsArray,
+                        customNote: customNote,
+                        qty: 1
+                    });
+                }
+                showAlert('เพิ่มสินค้าลงในตะกร้าเรียบร้อยแล้ว');
+            }
+
+            updateCartCount();
+            closeModal();
+            renderCart();
+        }
+
+        function updateCartCount() {
+            let totalQty = cart.reduce((sum, i) => sum + i.qty, 0);
+            document.getElementById('cartCount').innerText = totalQty;
+            let mobileCountEl = document.getElementById('mobileCartCount');
+            if(mobileCountEl) mobileCountEl.innerText = totalQty;
+        }
+
+        function renderCart() {
+            let list = document.getElementById('cartItemsList');
+            if(cart.length === 0) {
+                list.innerHTML = '<p style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ตะกร้ายังว่างอยู่เลยน้า</p>';
+                document.getElementById('cartTotalPrice').innerText = '฿0';
+                return;
+            }
+
+            list.innerHTML = '';
+            currentTotal = 0;
+            cart.forEach((item, index) => {
+                let subtotal = item.price * item.qty;
+                currentTotal += subtotal;
+                list.innerHTML += `
+                    <div class="cart-item">
+                        <div style="flex: 1; min-width: 180px;">
+                            <div style="font-weight: 600; color: var(--text-main); font-size: 0.95rem;">${item.name}</div>
+                            <div style="font-size: 0.75rem; color: var(--primary); font-weight: 500; margin-top: 2px;">(${item.options})</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">฿${item.price} × ${item.qty}</div>
+                        </div>
+                        <div style="display: flex; gap: 6px; align-items: center; margin-left: auto;">
+                            <button onclick="editCartItem(${index})" style="padding: 4px 8px; border: 1.5px solid var(--border-color); background: var(--primary-light); cursor: pointer; border-radius: 6px; font-size: 0.75rem; font-weight: 600; color: var(--primary); transition: var(--transition);">แก้ไข</button>
+                            <div style="display: flex; gap: 4px; align-items: center;">
+                                <button onclick="changeQty(${index}, -1)" style="width: 26px; height: 26px; border: 1.5px solid var(--border-color); background: white; cursor: pointer; border-radius: 6px; font-weight: 600; color: var(--primary);">-</button>
+                                <span style="font-weight: 600; min-width: 16px; text-align: center; font-size: 0.85rem;">${item.qty}</span>
+                                <button onclick="changeQty(${index}, 1)" style="width: 26px; height: 26px; border: 1.5px solid var(--border-color); background: white; cursor: pointer; border-radius: 6px; font-weight: 600; color: var(--primary);">+</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            document.getElementById('cartTotalPrice').innerText = `฿${currentTotal}`;
+        }
+
+        function changeQty(index, delta) {
+            cart[index].qty += delta;
+            if(cart[index].qty <= 0) { cart.splice(index, 1); }
+            renderCart();
+            updateCartCount();
+        }
+
+        function showCheckoutForm() {
+            if(cart.length === 0) { showAlert('กรุณาเลือกเมนูก่อนดำเนินการต่อด้วยนะค้าบ'); return; }
+            document.getElementById('checkoutFormSection').classList.remove('hidden');
+            document.getElementById('btnProceedCheckout').classList.add('hidden');
+        }
+
+        async function submitOrder() {
+            let name = document.getElementById('custName').value;
+            let phone = document.getElementById('custPhone').value;
+            let date = document.getElementById('custDate').value;
+            let time = document.getElementById('custTime').value;
+
+            if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return; }
+
+            let orderData = { customer_name: name, phone: phone, delivery_date: date, delivery_time: time, items: cart };
+
+            try {
+                let res = await fetch('/api/order', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(orderData)
+                });
+                let data = await res.json();
+                if(res.ok) {
+                    currentOrderId = data.order_id;
+                    openPaymentModal(data.order_id, data.total);
+                } else { showAlert('เกิดข้อผิดพลาดในการสร้างออเดอร์'); }
+            } catch(e) { console.error(e); }
+        }
+
+        async function openPaymentModal(orderId, total) {
+            document.getElementById('modalOrderId').innerText = `Order #${orderId}`;
+            document.getElementById('modalAmount').innerText = `฿${total}`;
+            
+            let res = await fetch('/api/payment/qr', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({amount: total})
+            });
+            let data = await res.json();
+            document.getElementById('qrImage').src = data.qr_image;
+            document.getElementById('paymentModal').style.display = 'flex';
+        }
+
+        // ฟังก์ชันอัปโหลดสลิปพร้อมระบบป้องกันการกดซ้ำและนับถอยหลัง 20 วินาที
+        async function uploadSlip() {
+            if (isSubmittingSlip) return;
+
+            let fileInput = document.getElementById('slipFile');
+            if(fileInput.files.length === 0) { 
+                showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า'); 
+                return; 
+            }
+
+            isSubmittingSlip = true;
+            let btn = document.getElementById('btnSubmitSlip');
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.style.cursor = 'not-allowed';
+
+            let countdown = 20; 
+            let originalText = btn.innerHTML;
+            
+            let timer = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                    btn.innerHTML = `⏳ กำลังตรวจสอบ (${countdown}s)...`;
+                } else {
+                    clearInterval(timer);
+                }
+            }, 1000);
+
+            let formData = new FormData();
+            formData.append('order_id', currentOrderId);
+            formData.append('slip', fileInput.files[0]);
+
+            try {
+                let res = await fetch('/api/slip', { method: 'POST', body: formData });
+                let data = await res.json();
+                
+                if(res.ok && data.success) {
+                    document.getElementById('paymentModal').style.display = 'none';
+                    document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentTotal}`;
+                    document.getElementById('successModal').style.display = 'flex';
+                    return; 
+                } else { 
+                    showAlert(data.message || 'ตรวจสอบสลิปไม่สำเร็จ'); 
+                }
+            } catch(e) { 
+                showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป'); 
+            }
+
+            let checkInterval = setInterval(() => {
+                if (countdown <= 0) {
+                    clearInterval(checkInterval);
+                    isSubmittingSlip = false;
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                    btn.innerHTML = originalText;
+                }
+            }, 500);
+        }
+
+        async function checkOrderStatus() {
+            let orderId = document.getElementById('searchOrderId').value.trim();
+            if(!orderId) return;
+
+            try {
+                let res = await fetch(`/api/order/status/${orderId}`);
+                let data = await res.json();
+                let resultDiv = document.getElementById('orderStatusResult');
+                
+                if(res.ok) {
+                    let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
+                    resultDiv.innerHTML = `
+                        <div style="background: #F8F9FA; padding: 16px; border-radius: 14px; border: 1.5px solid var(--border-color); text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>Order ID:</b> ${data.order_id}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>ลูกค้า:</b> ${data.customer_name}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>เบอร์โทร:</b> ${data.phone}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะการชำระ:</b> ${payStatus}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะออเดอร์:</b> ${data.order_status}</p>
+                            <p style="font-size: 0.85rem;"><b>เวลารับอาหาร:</b> ${data.delivery_date} ${data.delivery_time}</p>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = '<p style="color: var(--primary); text-align: center; padding: 16px; font-size: 0.85rem;">ไม่พบหมายเลข Order นี้ในระบบ</p>';
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        function closeModal() { document.querySelectorAll('.modal:not(#alertModal)').forEach(m => m.style.display = 'none'); }
+    </script>
+</body>
+</html>
