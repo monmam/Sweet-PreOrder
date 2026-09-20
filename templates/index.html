@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Sweet PreOrder - สั่งอาหารอร่อยๆ</title>
+    <!-- ไอคอนรูปชามอาหารบนแท็บเบราว์เซอร์ -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍲</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -517,7 +519,7 @@
         let currentTotal = 0;
         let selectedProductForOptions = null;
         let editingCartIndex = -1;
-        let isSubmittingSlip = false; // ตัวแปรป้องกันการกดซ้ำ
+        let isSubmittingSlip = false;
 
         document.addEventListener('DOMContentLoaded', () => {
             loadCategories();
@@ -884,7 +886,6 @@
             document.getElementById('paymentModal').style.display = 'flex';
         }
 
-        // ฟังก์ชันอัปโหลดสลิปพร้อมระบบป้องกันการกดซ้ำและนับถอยหลัง 20 วินาที
         async function uploadSlip() {
             if (isSubmittingSlip) return;
 
