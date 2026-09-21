@@ -243,10 +243,7 @@ def api_get_products():
     ws = get_sheet('Products')
     if not ws:
         return jsonify([])
-    try:
-        rows = ws.get_all_records()
-    except Exception:
-        return jsonify([])
+    rows = ws.get_all_records()
     active_products = []
     for r in rows:
         if str(r.get('status', 'active')).lower() == 'active':
@@ -278,20 +275,15 @@ def api_get_categories():
     ws = get_sheet('Categories')
     if not ws:
         return jsonify([])
-    try:
-        return jsonify(ws.get_all_records())
-    except Exception:
-        return jsonify([])
+    rows = ws.get_all_records()
+    return jsonify(rows)
 
 @app.route('/api/delivery-times', methods=['GET'])
 def api_get_delivery_times():
     ws = get_sheet('DeliveryTimes')
     if not ws:
         return jsonify([])
-    try:
-        rows = ws.get_all_records()
-    except Exception:
-        return jsonify([])
+    rows = ws.get_all_records()
     active_times = []
     for r in rows:
         status = str(r.get('status', 'active')).lower().strip()
@@ -302,7 +294,7 @@ def api_get_delivery_times():
 
 @app.route('/api/order', methods=['POST'])
 def api_create_order():
-    data = request.json or {}
+    data = request.json
     customer_name = data.get('customer_name')
     phone = str(data.get('phone', '')).strip().zfill(10)
     delivery_date = data.get('delivery_date')
@@ -314,18 +306,9 @@ def api_create_order():
 
     total = 0
     for item in items:
-        try:
-            base_price = float(item.get('sale_price') if item.get('sale_price') not in [None, ''] else item.get('price', 0))
-        except:
-            base_price = 0.0
-        try:
-            extra_price = float(item.get('extra_price', 0))
-        except:
-            extra_price = 0.0
-        try:
-            qty = int(item.get('qty', 1))
-        except:
-            qty = 1
+        base_price = float(item.get('sale_price') if item.get('sale_price') not in [None, ''] else item.get('price', 0))
+        extra_price = float(item.get('extra_price', 0))
+        qty = int(item.get('qty', 1))
         total += (base_price + extra_price) * qty
     
     random_code = ''.join(random.choice(string.digits) for _ in range(4))
@@ -340,21 +323,15 @@ def api_create_order():
     
     ws = get_sheet('Orders')
     if ws:
-        try:
-            ws.append_row(order_row)
-            get_cached_orders(force_refresh=True)
-        except Exception as e:
-            print("Error appending order:", e)
+        ws.append_row(order_row)
+        get_cached_orders(force_refresh=True)
         
     return jsonify({'order_id': order_id, 'total': total})
 
 @app.route('/api/payment/qr', methods=['POST'])
 def api_payment_qr():
-    data = request.json or {}
-    try:
-        amount = float(data.get('amount', 0))
-    except:
-        amount = 0.0
+    data = request.json
+    amount = float(data.get('amount', 0))
     promptpay_no = os.getenv('PROMPTPAY_NUMBER', '0812345678')
     
     qr_data = generate_promptpay_payload(promptpay_no, amount)
@@ -388,10 +365,7 @@ def api_upload_slip():
     if not target_order:
         return jsonify({'error': 'Order not found'}), 404
         
-    try:
-        expected_amount = float(target_order.get('total', 0))
-    except:
-        expected_amount = 0.0
+    expected_amount = float(target_order.get('total', 0))
     
     drive = get_drive_service()
     folder_id = os.getenv('GOOGLE_DRIVE_SLIP_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
@@ -403,27 +377,24 @@ def api_upload_slip():
     file_id = ''
     file_url = ''
     if drive:
+        metadata = {'name': filename}
+        if folder_id:
+            metadata['parents'] = [folder_id]
+        media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype=mime_type, resumable=True)
+        created_file = drive.files().create(
+            body=metadata, 
+            media_body=media, 
+            fields='id'
+        ).execute()
+        file_id = created_file.get('id')
         try:
-            metadata = {'name': filename}
-            if folder_id:
-                metadata['parents'] = [folder_id]
-            media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype=mime_type, resumable=True)
-            created_file = drive.files().create(
-                body=metadata, 
-                media_body=media, 
-                fields='id'
+            drive.permissions().create(
+                fileId=file_id,
+                body={'role': 'reader', 'type': 'anyone'}
             ).execute()
-            file_id = created_file.get('id')
-            try:
-                drive.permissions().create(
-                    fileId=file_id,
-                    body={'role': 'reader', 'type': 'anyone'}
-                ).execute()
-            except Exception:
-                pass
-            file_url = f"https://lh3.googleusercontent.com/d/{file_id}"
-        except Exception as e:
-            print("Drive upload slip error:", e)
+        except Exception:
+            pass
+        file_url = f"https://lh3.googleusercontent.com/d/{file_id}"
 
     thunder_url = os.getenv('THUNDER_API_URL')
     thunder_key = os.getenv('THUNDER_API_KEY')
@@ -531,47 +502,37 @@ def api_upload_slip():
             existing_trans_ref = str(o.get('trans_ref', '')).strip()
             if existing_trans_ref and existing_trans_ref == str(trans_ref).strip():
                 verified = False
-                try:
-                    cell = ws_orders.find(order_id)
-                    if cell:
-                        ws_orders.delete_rows(cell.row)
-                        get_cached_orders(force_refresh=True)
-                except Exception:
-                    pass
+                cell = ws_orders.find(order_id)
+                if cell:
+                    ws_orders.delete_rows(cell.row)
+                    get_cached_orders(force_refresh=True)
                 return jsonify({
                     'success': False, 
                     'message': '❌ สลิปนี้ถูกใช้งานไปแล้วในระบบ ไม่สามารถนำกลับมาใช้ซ้ำได้'
                 }), 400
 
     if verified and ws_orders:
-        try:
-            cell = ws_orders.find(order_id)
-            if cell:
-                row_idx = cell.row
-                ws_orders.update_cell(row_idx, 8, 'paid')
-                ws_orders.update_cell(row_idx, 9, 'confirmed')
-                ws_orders.update_cell(row_idx, 10, file_url)
-                ws_orders.update_cell(row_idx, 12, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                if trans_ref:
-                    ws_orders.update_cell(row_idx, 13, str(trans_ref))
-                get_cached_orders(force_refresh=True)
-            return jsonify({'success': True, 'message': 'Payment verified successfully'})
-        except Exception as e:
-            print("Error updating sheet after verification:", e)
-    
-    if ws_orders:
-        try:
+        cell = ws_orders.find(order_id)
+        if cell:
+            row_idx = cell.row
+            ws_orders.update_cell(row_idx, 8, 'paid')
+            ws_orders.update_cell(row_idx, 9, 'confirmed')
+            ws_orders.update_cell(row_idx, 10, file_url)
+            ws_orders.update_cell(row_idx, 12, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            if trans_ref:
+                ws_orders.update_cell(row_idx, 13, str(trans_ref))
+            get_cached_orders(force_refresh=True)
+        return jsonify({'success': True, 'message': 'Payment verified successfully'})
+    else:
+        if ws_orders:
             cell = ws_orders.find(order_id)
             if cell:
                 ws_orders.delete_rows(cell.row)
                 get_cached_orders(force_refresh=True)
-        except Exception:
-            pass
-            
-    return jsonify({
-        'success': False, 
-        'message': 'ยอดเงินในสลิปไม่ถูกต้อง\nหรือสลิปนี้ถูกใช้งานไปแล้ว\nหรือสลิปไม่ได้โอนเข้าบัญชีร้าน'
-    }), 400
+        return jsonify({
+            'success': False, 
+            'message': 'ยอดเงินในสลิปไม่ถูกต้อง\nหรือสลิปนี้ถูกใช้งานไปแล้ว\nหรือสลิปไม่ได้โอนเข้าบัญชีร้าน'
+        }), 400
 
 @app.route('/api/order/status/<order_id>', methods=['GET'])
 def api_order_status(order_id):
@@ -584,7 +545,7 @@ def api_order_status(order_id):
 # --- ADMIN APIs ---
 @app.route('/api/admin/login', methods=['POST'])
 def api_admin_login():
-    data = request.json or {}
+    data = request.json
     username = data.get('username')
     password = data.get('password')
     
@@ -615,16 +576,10 @@ def api_admin_dashboard():
     orders = get_cached_orders()
     today_str = datetime.now().strftime('%Y-%m-%d')
     
-    try:
-        today_sales = sum(float(o.get('total', 0)) for o in orders if str(o.get('created_at', '')).startswith(today_str) and str(o.get('payment_status', '')).lower() == 'paid')
-        today_orders = sum(1 for o in orders if str(o.get('created_at', '')).startswith(today_str))
-        paid_orders = sum(1 for o in orders if str(o.get('created_at', '')).startswith(today_str) and str(o.get('payment_status', '')).lower() == 'paid')
-        pending_delivery = sum(1 for o in orders if str(o.get('order_status', '')).lower() in ['confirmed', 'preparing'])
-    except:
-        today_sales = 0.0
-        today_orders = 0
-        paid_orders = 0
-        pending_delivery = 0
+    today_sales = sum(float(o.get('total', 0)) for o in orders if str(o.get('created_at', '')).startswith(today_str) and str(o.get('payment_status', '')).lower() == 'paid')
+    today_orders = sum(1 for o in orders if str(o.get('created_at', '')).startswith(today_str))
+    paid_orders = sum(1 for o in orders if str(o.get('created_at', '')).startswith(today_str) and str(o.get('payment_status', '')).lower() == 'paid')
+    pending_delivery = sum(1 for o in orders if str(o.get('order_status', '')).lower() in ['confirmed', 'preparing'])
     
     today_date = datetime.now().date()
     chart_labels = []
@@ -633,23 +588,17 @@ def api_admin_dashboard():
         d = today_date - timedelta(days=i)
         d_str = d.strftime('%Y-%m-%d')
         chart_labels.append(d.strftime('%d/%m'))
-        try:
-            day_total = sum(float(o.get('total', 0)) for o in orders if str(o.get('created_at', '')).startswith(d_str) and str(o.get('payment_status', '')).lower() == 'paid')
-        except:
-            day_total = 0.0
+        day_total = sum(float(o.get('total', 0)) for o in orders if str(o.get('created_at', '')).startswith(d_str) and str(o.get('payment_status', '')).lower() == 'paid')
         chart_data.append(day_total)
 
     item_counts = {}
     for o in orders:
         items_raw = o.get('items', '[]')
         try:
-            items = json.loads(items_raw) if items_raw else []
+            items = json.loads(items_raw)
             for itm in items:
                 name = itm.get('name', 'Unknown')
-                try:
-                    qty = int(itm.get('qty', 1))
-                except:
-                    qty = 1
+                qty = int(itm.get('qty', 1))
                 item_counts[name] = item_counts.get(name, 0) + qty
         except Exception:
             pass
@@ -674,125 +623,78 @@ def api_admin_products():
     if not ws:
         return jsonify({'error': 'Sheet not found'}), 500
         
-    try:
-        if request.method == 'GET':
-            records = ws.get_all_records()
-            for r in records:
-                if '' in r:
-                    del r['']
-                options_raw = r.get('options', '[]')
-                try:
-                    r['options'] = json.loads(options_raw) if options_raw else []
-                except Exception:
-                    r['options'] = []
-            return jsonify(records)
-            
-        elif request.method == 'POST':
-            name = request.form.get('name')
-            description = request.form.get('description', '')
-            price = request.form.get('price', 0)
-            sale_price = request.form.get('sale_price', '')
-            category = request.form.get('category', '')
-            status = request.form.get('status', 'active')
-            options_json = request.form.get('options', '[]')
-            file = request.files.get('image')
-            
-            image_url = ''
-            if file and file.filename != '':
-                drive = get_drive_service()
-                folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
-                filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
-                media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
-                metadata = {'name': filename}
-                if folder_id:
-                    metadata['parents'] = [folder_id]
-                if drive:
-                    try:
-                        created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
-                        file_id = created.get('id')
-                        try:
-                            drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
-                        except Exception:
-                            pass
-                        image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
-                    except Exception as e:
-                        print("Drive upload product error:", e)
-
-            prod_id = f"PROD-{int(datetime.now().timestamp())}"
-            created_at = datetime.now().strftime('%Y-%m-%d')
-
-            # จัดเรียงลำดับคอลัมน์ใหม่ให้ตรงเป๊ะ:
-            # id, name, description, category, price, sale_price, image, status, created_at, options
-            row = [
-                prod_id,         # 1. id
-                name,            # 2. name
-                description,     # 3. description
-                category,        # 4. category
-                price,           # 5. price
-                sale_price,      # 6. sale_price
-                image_url,       # 7. image
-                status,          # 8. status
-                created_at,      # 9. created_at
-                options_json     # 10. options
-            ]
-            ws.append_row(row)
-            return jsonify({'success': True})
-
-        elif request.method == 'PUT':
-            req_json = {}
+    if request.method == 'GET':
+        records = ws.get_all_records()
+        for r in records:
+            if '' in r:
+                del r['']
+            options_raw = r.get('options', '[]')
             try:
-                if request.is_json:
-                    req_json = request.json or {}
-            except:
-                pass
-
-            prod_id = (
-                request.form.get('id') or request.form.get('product_id') or 
-                request.args.get('id') or 
-                req_json.get('id') or 
-                req_json.get('product_id')
-            )
-            
-            # กรณีที่ส่งมาเฉพาะการเปลี่ยนสถานะ (Toggle Status) แบบ JSON
-            if not prod_id and req_json.get('id'):
-                prod_id = req_json.get('id')
-
-            if not prod_id:
-                return jsonify({'error': 'Missing product id'}), 400
-
-            try:
-                cell = ws.find(str(prod_id))
+                r['options'] = json.loads(options_raw) if options_raw else []
             except Exception:
-                cell = None
+                r['options'] = []
+        return jsonify(records)
+        
+    elif request.method == 'POST':
+        name = request.form.get('name')
+        description = request.form.get('description', '')
+        price = request.form.get('price', 0)
+        sale_price = request.form.get('sale_price', '')
+        category = request.form.get('category', '')
+        status = request.form.get('status', 'active')
+        options_json = request.form.get('options', '[]')
+        file = request.files.get('image')
+        
+        image_url = ''
+        if file and file.filename != '':
+            drive = get_drive_service()
+            folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+            filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
+            media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
+            metadata = {'name': filename}
+            if folder_id:
+                metadata['parents'] = [folder_id]
+            if drive:
+                created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                file_id = created.get('id')
+                try:
+                    drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                except Exception:
+                    pass
+                image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
 
-            if not cell:
-                return jsonify({'error': 'Product not found'}), 404
-            
-            row_idx = cell.row
-            try:
-                row_values = ws.row_values(row_idx)
-            except:
-                row_values = []
-            
-            # ดึงค่าเก่ามาสำรองไว้
-            current_id = row_values[0] if len(row_values) > 0 else prod_id
-            current_name = row_values[1] if len(row_values) > 1 else ''
-            current_desc = row_values[2] if len(row_values) > 2 else ''
-            current_cat = row_values[3] if len(row_values) > 3 else ''
-            current_price = row_values[4] if len(row_values) > 4 else 0
-            current_sale_price = row_values[5] if len(row_values) > 5 else ''
-            current_image = row_values[6] if len(row_values) > 6 else ''
-            current_status = row_values[7] if len(row_values) > 7 else 'active'
-            current_created = row_values[8] if len(row_values) > 8 else datetime.now().strftime('%Y-%m-%d')
-            current_options = row_values[9] if len(row_values) > 9 else '[]'
+        prod_id = f"PROD-{int(datetime.now().timestamp())}"
+        row = [prod_id, name, description, category, price, sale_price, image_url, status, datetime.now().strftime('%Y-%m-%d'), options_json]
+        ws.append_row(row)
+        return jsonify({'success': True})
 
-            # ตรวจสอบว่าเป็นการเปลี่ยนสถานะด่วนผ่าน JSON หรือเป็นการแก้ไขฟอร์มเต็มรูปแบบ
-            if req_json and 'status' in req_json and not request.form:
-                new_status = req_json.get('status', current_status)
-                ws.update_cell(row_idx, 8, new_status)
-                return jsonify({'success': True})
+    elif request.method == 'PUT':
+        prod_id = (
+            request.form.get('id') or request.form.get('product_id') or 
+            request.args.get('id') or 
+            (request.json.get('id') if request.is_json else None) or
+            (request.json.get('product_id') if request.is_json else None)
+        )
+        if not prod_id:
+            return jsonify({'error': 'Missing product id'}), 400
 
-            # รับค่าจากฟอร์ม
+        cell = ws.find(prod_id)
+        if not cell:
+            return jsonify({'error': 'Product not found'}), 404
+        
+        row_idx = cell.row
+        row_values = ws.row_values(row_idx)
+        
+        current_name = row_values[1] if len(row_values) > 1 else ''
+        current_desc = row_values[2] if len(row_values) > 2 else ''
+        current_cat = row_values[3] if len(row_values) > 3 else ''
+        current_price = row_values[4] if len(row_values) > 4 else ''
+        current_sale_price = row_values[5] if len(row_values) > 5 else ''
+        current_image = row_values[6] if len(row_values) > 6 else ''
+        current_status = row_values[7] if len(row_values) > 7 else 'active'
+        current_options = row_values[9] if len(row_values) > 9 else '[]'
+
+        if request.content_type and ('multipart/form-data' in request.content_type or 'form' in request.content_type):
             name = request.form.get('name', current_name)
             description = request.form.get('description', current_desc)
             price = request.form.get('price', current_price)
@@ -805,10 +707,9 @@ def api_admin_products():
             image_url = current_image
             if file and file.filename != '':
                 drive = get_drive_service()
-                # ลบรูปเก่าใน Drive (ถ้ามี) เพื่อประหยัดพื้นที่
                 if current_image:
                     old_file_id = None
-                    if '/d/' in current_image:
+                    if 'lh3.googleusercontent.com/d/' in current_image:
                         old_file_id = current_image.split('/d/')[-1].split('/')[0].split('?')[0]
                     elif 'id=' in current_image:
                         old_file_id = current_image.split('id=')[-1].split('&')[0]
@@ -825,61 +726,67 @@ def api_admin_products():
                 if folder_id:
                     metadata['parents'] = [folder_id]
                 if drive:
+                    created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                    file_id = created.get('id')
                     try:
-                        created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
-                        file_id = created.get('id')
+                        drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                    except Exception:
+                        pass
+                    image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
+
+            ws.update_cell(row_idx, 2, name)
+            ws.update_cell(row_idx, 3, description)
+            ws.update_cell(row_idx, 4, category)
+            ws.update_cell(row_idx, 5, price)
+            ws.update_cell(row_idx, 6, sale_price)
+            ws.update_cell(row_idx, 7, image_url)
+            ws.update_cell(row_idx, 8, status)
+            ws.update_cell(row_idx, 10, options_json)
+        else:
+            data = request.json or {}
+            if 'status' in data:
+                ws.update_cell(row_idx, 8, data['status'])
+            if 'price' in data:
+                ws.update_cell(row_idx, 5, data['price'])
+            if 'sale_price' in data:
+                ws.update_cell(row_idx, 6, data['sale_price'])
+            if 'options' in data:
+                opt_val = data['options']
+                if isinstance(opt_val, (list, dict)):
+                    opt_val = json.dumps(opt_val)
+                ws.update_cell(row_idx, 10, opt_val)
+            if 'name' in data:
+                ws.update_cell(row_idx, 2, data['name'])
+            if 'description' in data:
+                ws.update_cell(row_idx, 3, data['description'])
+            if 'category' in data:
+                ws.update_cell(row_idx, 4, data['category'])
+                
+        return jsonify({'success': True})
+
+    elif request.method == 'DELETE':
+        data = request.json or {}
+        prod_id = data.get('id') or request.args.get('id')
+        cell = ws.find(prod_id)
+        if cell:
+            row_idx = cell.row
+            row_values = ws.row_values(row_idx)
+            if len(row_values) > 6:
+                image_url = row_values[6]
+                file_id = None
+                if 'lh3.googleusercontent.com/d/' in image_url:
+                    file_id = image_url.split('/d/')[-1].split('/')[0].split('?')[0]
+                elif 'id=' in image_url:
+                    file_id = image_url.split('id=')[-1].split('&')[0]
+                if file_id:
+                    drive = get_drive_service()
+                    if drive:
                         try:
-                            drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                            drive.files().delete(fileId=file_id).execute()
                         except Exception:
                             pass
-                        # ใช้ลิงก์รูปแบบ uc?export=view&id= เพื่อให้แสดงผลรูปได้ชัวร์ 100%
-                        image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
-                    except Exception as e:
-                        print("Drive update image error:", e)
-
-            # อัปเดตข้อมูลยกแถว (Columns: id, name, description, category, price, sale_price, image, status, created_at, options)
-            updated_row = [
-                current_id, name, description, category, price, sale_price, image_url, status, current_created, options_json
-            ]
-            
-            ws.update(f'A{row_idx}:J{row_idx}', [updated_row])
-            return jsonify({'success': True})
-
-        elif request.method == 'DELETE':
-            data = {}
-            try:
-                if request.is_json:
-                    data = request.json or {}
-            except:
-                pass
-            prod_id = data.get('id') or request.args.get('id')
-            if prod_id:
-                try:
-                    cell = ws.find(str(prod_id))
-                    if cell:
-                        row_idx = cell.row
-                        row_values = ws.row_values(row_idx)
-                        if len(row_values) > 6:
-                            image_url = row_values[6]
-                            file_id = None
-                            if 'lh3.googleusercontent.com/d/' in image_url:
-                                file_id = image_url.split('/d/')[-1].split('/')[0].split('?')[0]
-                            elif 'id=' in image_url:
-                                file_id = image_url.split('id=')[-1].split('&')[0]
-                            if file_id:
-                                drive = get_drive_service()
-                                if drive:
-                                    try:
-                                        drive.files().delete(fileId=file_id).execute()
-                                    except Exception:
-                                        pass
-                        ws.delete_rows(row_idx)
-                except Exception as e:
-                    print("Error deleting product:", e)
-            return jsonify({'success': True})
-    except Exception as e:
-        print(f"Products API Critical Error: {e}")
-        return jsonify({'error': str(e)}), 500
+            ws.delete_rows(row_idx)
+        return jsonify({'success': True})
 
 @app.route('/api/admin/categories', methods=['GET', 'POST', 'DELETE'])
 def api_admin_categories():
@@ -889,27 +796,24 @@ def api_admin_categories():
     if not ws:
         return jsonify({'error': 'Sheet not found'}), 500
         
-    try:
-        if request.method == 'GET':
-            return jsonify(ws.get_all_records())
-        elif request.method == 'POST':
-            data = request.json or {}
-            name = data.get('name')
-            if not name:
-                return jsonify({'success': False, 'message': 'Missing category name'}), 400
-            cat_id = f"CAT-{int(datetime.now().timestamp())}"
-            ws.append_row([cat_id, name])
+    if request.method == 'GET':
+        return jsonify(ws.get_all_records())
+    elif request.method == 'POST':
+        data = request.json
+        name = data.get('name')
+        if not name:
+            return jsonify({'success': False, 'message': 'Missing category name'}), 400
+        cat_id = f"CAT-{int(datetime.now().timestamp())}"
+        ws.append_row([cat_id, name])
+        return jsonify({'success': True})
+    elif request.method == 'DELETE':
+        data = request.json
+        cat_id = data.get('id')
+        cell = ws.find(cat_id)
+        if cell:
+            ws.delete_rows(cell.row)
             return jsonify({'success': True})
-        elif request.method == 'DELETE':
-            data = request.json or {}
-            cat_id = data.get('id')
-            cell = ws.find(str(cat_id))
-            if cell:
-                ws.delete_rows(cell.row)
-                return jsonify({'success': True})
-            return jsonify({'success': False, 'message': 'Category not found'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'message': 'Category not found'}), 404
 
 @app.route('/api/admin/orders', methods=['GET', 'PUT'])
 def api_admin_orders():
@@ -919,19 +823,16 @@ def api_admin_orders():
     if request.method == 'GET':
         return jsonify(get_cached_orders())
     elif request.method == 'PUT':
-        data = request.json or {}
+        data = request.json
         order_id = data.get('order_id')
         new_status = data.get('order_status')
         ws = get_sheet('Orders')
         if ws:
-            try:
-                cell = ws.find(str(order_id))
-                if cell:
-                    ws.update_cell(cell.row, 9, new_status)
-                    get_cached_orders(force_refresh=True)
-                    return jsonify({'success': True})
-            except Exception as e:
-                print("Error updating order status:", e)
+            cell = ws.find(order_id)
+            if cell:
+                ws.update_cell(cell.row, 9, new_status)
+                get_cached_orders(force_refresh=True)
+                return jsonify({'success': True})
         return jsonify({'error': 'Order not found'}), 404
 
 @app.route('/api/admin/delivery-times', methods=['GET', 'POST', 'PUT', 'DELETE'])
@@ -942,43 +843,40 @@ def api_admin_delivery_times():
     if not ws:
         return jsonify([])
         
-    try:
-        if request.method == 'GET':
-            records = ws.get_all_records()
-            for r in records:
-                r['time'] = normalize_time_format(r.get('time', ''))
-            return jsonify(records)
-        elif request.method == 'POST':
-            data = request.json or {}
-            time_val = data.get('time')
-            if time_val and ':' in str(time_val):
-                parts = str(time_val).split(':')
-                if len(parts) == 2:
-                    hour = parts[0].zfill(2)
-                    minute = parts[1].zfill(2)
-                    time_val = f"'{hour}:{minute}"
-            status = data.get('status', 'active')
-            t_id = f"TIME-{int(datetime.now().timestamp())}"
-            ws.append_row([t_id, time_val, status])
+    if request.method == 'GET':
+        records = ws.get_all_records()
+        for r in records:
+            r['time'] = normalize_time_format(r.get('time', ''))
+        return jsonify(records)
+    elif request.method == 'POST':
+        data = request.json
+        time_val = data.get('time')
+        if time_val and ':' in str(time_val):
+            parts = str(time_val).split(':')
+            if len(parts) == 2:
+                hour = parts[0].zfill(2)
+                minute = parts[1].zfill(2)
+                time_val = f"'{hour}:{minute}"
+        status = data.get('status', 'active')
+        t_id = f"TIME-{int(datetime.now().timestamp())}"
+        ws.append_row([t_id, time_val, status])
+        return jsonify({'success': True})
+    elif request.method == 'PUT':
+        data = request.json
+        t_id = data.get('id')
+        new_status = data.get('status')
+        cell = ws.find(t_id)
+        if cell:
+            ws.update_cell(cell.row, 3, new_status)
             return jsonify({'success': True})
-        elif request.method == 'PUT':
-            data = request.json or {}
-            t_id = data.get('id')
-            new_status = data.get('status')
-            cell = ws.find(str(t_id))
-            if cell:
-                ws.update_cell(cell.row, 3, new_status)
-                return jsonify({'success': True})
-            return jsonify({'error': 'Delivery time not found'}), 404
-        elif request.method == 'DELETE':
-            data = request.json or {}
-            t_id = data.get('id')
-            cell = ws.find(str(t_id))
-            if cell:
-                ws.delete_rows(cell.row)
-            return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Delivery time not found'}), 404
+    elif request.method == 'DELETE':
+        data = request.json
+        t_id = data.get('id')
+        cell = ws.find(t_id)
+        if cell:
+            ws.delete_rows(cell.row)
+        return jsonify({'success': True})
 
 @app.route('/api/admin/reports', methods=['GET'])
 def api_admin_reports():
@@ -1000,10 +898,7 @@ def api_admin_reports():
         start_date = today - timedelta(days=29)
         filtered_orders = [o for o in orders if o.get('created_at') and str(o.get('created_at', ''))[:10] >= start_date.strftime('%Y-%m-%d') and str(o.get('payment_status', '')).lower() == 'paid']
 
-    try:
-        total_sales = sum(float(o.get('total', 0)) for o in filtered_orders)
-    except:
-        total_sales = 0.0
+    total_sales = sum(float(o.get('total', 0)) for o in filtered_orders)
     total_orders = len(filtered_orders)
 
     chart_labels = []
@@ -1016,28 +911,22 @@ def api_admin_reports():
             d = today - timedelta(days=i)
             d_str = d.strftime('%Y-%m-%d')
             chart_labels.append(d.strftime('%d/%m'))
-            try:
-                day_total = sum(float(o.get('total', 0)) for o in filtered_orders if str(o.get('created_at', '')).startswith(d_str))
-            except:
-                day_total = 0.0
+            day_total = sum(float(o.get('total', 0)) for o in filtered_orders if str(o.get('created_at', '')).startswith(d_str))
             chart_data.append(day_total)
     elif period == '30days':
         for i in range(5, -1, -1):
             d = today - timedelta(days=i*5)
             chart_labels.append(d.strftime('%d/%m'))
-            chart_data.append(total_sales / 6 if total_sales > 0 else 0.0)
+            chart_data.append(total_sales / 6)
 
     item_counts = {}
     for o in filtered_orders:
         items_raw = o.get('items', '[]')
         try:
-            items = json.loads(items_raw) if items_raw else []
+            items = json.loads(items_raw)
             for itm in items:
                 name = itm.get('name', 'Unknown')
-                try:
-                    qty = int(itm.get('qty', 1))
-                except:
-                    qty = 1
+                qty = int(itm.get('qty', 1))
                 item_counts[name] = item_counts.get(name, 0) + qty
         except Exception:
             pass
