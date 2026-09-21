@@ -398,8 +398,8 @@
             </div>
             <div class="cart-section">
                 <div class="form-group">
-                    <label>กรอก Order ID (เช่น ORD-0001)</label>
-                    <input type="text" id="searchOrderId" placeholder="ORD-XXXX">
+                    <label>กรอก Order ID (เช่น ORD-1A2B3C4D5E)</label>
+                    <input type="text" id="searchOrderId" placeholder="ORD-XXXXXXXXXX">
                 </div>
                 <button class="btn-checkout" onclick="checkOrderStatus()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
@@ -516,16 +516,54 @@
         let allProducts = [];
         let currentCategory = 'ทั้งหมด';
         let currentOrderId = '';
-        let currentTotal = 0;
+        let currentOrderTotal = 0;   // ยอดที่ server คำนวณเอง (ใช้แสดงผลหลังสร้างออเดอร์)
+        let currentTotal = 0;        // ยอดในตะกร้า (คำนวณฝั่ง client เพื่อแสดงผลเท่านั้น)
         let selectedProductForOptions = null;
         let editingCartIndex = -1;
         let isSubmittingSlip = false;
+        let isSubmittingOrder = false;
+
+        const PLACEHOLDER_IMG = 'data:image/svg+xml,' + encodeURIComponent(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='160'><rect width='100%' height='100%' fill='#f1f5f9'/><text x='50%' y='52%' dominant-baseline='middle' text-anchor='middle' font-size='44'>🍽️</text></svg>"
+        );
+
+        const ORDER_STATUS_TH = {
+            pending: 'รอยืนยัน',
+            confirmed: 'ยืนยันแล้ว',
+            preparing: 'กำลังเตรียม',
+            ready: 'พร้อมรับ',
+            completed: 'เสร็จสิ้น'
+        };
+
+        // กัน HTML/JS injection เวลานำข้อมูลจาก API ไปใส่ใน innerHTML
+        function esc(v) {
+            return String(v ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+        }
+
+        // ราคาที่ลูกค้าจะถูกคิดจริง — ตรงกับ app.py: มี sale_price ใช้ sale_price ไม่มีใช้ price
+        function unitPrice(p) {
+            return (p.sale_price !== null && p.sale_price !== undefined && p.sale_price !== '')
+                ? Number(p.sale_price) : Number(p.price);
+        }
+
+        function priceHtml(p) {
+            const eff = unitPrice(p), base = Number(p.price);
+            if (eff < base) {
+                return `<span style="text-decoration: line-through; color: var(--text-muted); font-size: 0.8em; font-weight: 500; margin-right: 4px;">฿${base}</span>฿${eff}`;
+            }
+            return `฿${eff}`;
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
             loadCategories();
             loadProducts();
             loadDeliveryTimes();
-            document.getElementById('custDate').valueAsDate = new Date();
+            // ใช้วันที่ตามเวลาเครื่องผู้ใช้ (valueAsDate ใช้ UTC ทำให้ช่วง 00:00-07:00 ของไทยได้วันเมื่อวาน)
+            const d = new Date();
+            const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const dateInput = document.getElementById('custDate');
+            dateInput.min = today;
+            dateInput.value = today;
         });
 
         function showAlert(message, title = "แจ้งเตือนระบบ") {
@@ -556,29 +594,26 @@
             try {
                 let res = await fetch('/api/categories');
                 let categories = await res.json();
+                if (!Array.isArray(categories)) categories = [];
                 let container = document.getElementById('categoryChips');
-                container.innerHTML = `
-                    <div class="chip active" onclick="filterCategory('ทั้งหมด', this)">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-                        ทั้งหมด
+                const svg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>`;
+
+                // เก็บชิป "ทั้งหมด" ที่เขียนไว้ใน HTML ไว้ แล้วเติมชิปหมวดหมู่ต่อท้าย
+                container.querySelectorAll('.chip[data-name]').forEach(el => el.remove());
+                container.insertAdjacentHTML('beforeend', categories.map(c => `
+                    <div class="chip" data-name="${esc(c.name)}" onclick="filterCategory(this.dataset.name, this)">
+                        ${svg}
+                        ${esc(c.name)}
                     </div>
-                `;
-                
-                categories.forEach(c => {
-                    container.innerHTML += `
-                        <div class="chip" onclick="filterCategory('${c.name}', this)">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>
-                            ${c.name}
-                        </div>
-                    `;
-                });
+                `).join(''));
             } catch(e) { console.error(e); }
         }
 
         async function loadProducts() {
             try {
                 let res = await fetch('/api/products');
-                allProducts = await res.json();
+                let data = await res.json();
+                allProducts = Array.isArray(data) ? data : [];
                 renderProducts(allProducts);
             } catch(e) { console.error(e); }
         }
@@ -591,42 +626,43 @@
             if(category === 'ทั้งหมด') {
                 renderProducts(allProducts);
             } else {
-                let filtered = allProducts.filter(p => p.category === category);
-                renderProducts(filtered);
+                renderProducts(allProducts.filter(p => p.category === category));
             }
         }
 
         function renderProducts(products) {
             let grid = document.getElementById('foodGrid');
-            grid.innerHTML = '';
-            
+
             if(products.length === 0) {
                 grid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ยังไม่มีเมนูในหมวดหมู่นี้จ้า</p>';
                 return;
             }
 
-            products.forEach(p => {
-                grid.innerHTML += `
-                    <div class="food-card">
-                        <div class="food-img-container">
-                            <img class="food-img" src="${p.image || 'https://via.placeholder.com/300x160?text=Food'}" alt="${p.name}" loading="lazy">
+            grid.innerHTML = products.map(p => `
+                <div class="food-card">
+                    <div class="food-img-container">
+                        <img class="food-img" src="${esc(p.image_url) || PLACEHOLDER_IMG}" alt="${esc(p.name)}" loading="lazy" onerror="this.onerror=null; this.src=PLACEHOLDER_IMG;">
+                    </div>
+                    <div class="food-info">
+                        <div>
+                            <div class="food-name">${esc(p.name)}</div>
+                            <div class="food-desc">${esc(p.description)}</div>
                         </div>
-                        <div class="food-info">
-                            <div>
-                                <div class="food-name">${p.name}</div>
-                                <div class="food-desc">${p.description || ''}</div>
-                            </div>
-                            <div class="food-footer">
-                                <div class="food-price">฿${p.price}</div>
-                                <button class="btn-add" onclick='openOptionsModal(${JSON.stringify(p)})'>
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                                    เพิ่ม
-                                </button>
-                            </div>
+                        <div class="food-footer">
+                            <div class="food-price">${priceHtml(p)}</div>
+                            <button class="btn-add" data-id="${esc(p.id)}" onclick="openProductById(this.dataset.id)">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                เพิ่ม
+                            </button>
                         </div>
                     </div>
-                `;
-            });
+                </div>
+            `).join('');
+        }
+
+        function openProductById(id) {
+            const p = allProducts.find(x => String(x.id) === String(id));
+            if (p) openOptionsModal(p);
         }
 
         async function loadDeliveryTimes() {
@@ -658,10 +694,11 @@
             editingCartIndex = editIndex;
 
             document.getElementById('optFoodName').innerText = product.name;
-            document.getElementById('optFoodPrice').innerText = `ราคาพื้นฐาน ฿${product.price}`;
-            
+            document.getElementById('optFoodPrice').innerText = `ราคาพื้นฐาน ฿${unitPrice(product)}`;
+
             let imgElement = document.getElementById('optFoodImage');
-            imgElement.src = product.image || 'https://via.placeholder.com/300x160?text=Food';
+            imgElement.onerror = () => { imgElement.onerror = null; imgElement.src = PLACEHOLDER_IMG; };
+            imgElement.src = product.image_url || PLACEHOLDER_IMG;
 
             let noteInput = document.getElementById('optCustomNote');
             if (editingCartIndex > -1 && cart[editingCartIndex]) {
@@ -671,8 +708,8 @@
             }
 
             let confirmBtn = document.getElementById('modalConfirmBtn');
-            confirmBtn.innerHTML = editingCartIndex > -1 ? 
-                `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg> บันทึกการแก้ไข` : 
+            confirmBtn.innerHTML = editingCartIndex > -1 ?
+                `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg> บันทึกการแก้ไข` :
                 `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg> ยืนยันเพิ่มลงตะกร้า`;
 
             let container = document.getElementById('dynamicOptionsContainer');
@@ -686,8 +723,9 @@
             let existingOptionsArray = editingCartIndex > -1 && cart[editingCartIndex] ? cart[editingCartIndex].selectedOptionsArray || [] : [];
 
             if (parsedOptions && Array.isArray(parsedOptions) && parsedOptions.length > 0) {
+                let html = '';
                 parsedOptions.forEach((optGroup, groupIndex) => {
-                    let groupHtml = `<div class="option-group-title">🔸 ${optGroup.title || 'ตัวเลือก'}</div>`;
+                    let groupHtml = `<div class="option-group-title">🔸 ${esc(optGroup.title || 'ตัวเลือก')}</div>`;
                     groupHtml += `<div class="option-options-list">`;
 
                     let inputType = optGroup.type === 'checkbox' ? 'checkbox' : 'radio';
@@ -697,18 +735,19 @@
                         optGroup.choices.forEach((choice, choiceIndex) => {
                             let priceText = choice.price > 0 ? ` (+${choice.price} ฿)` : '';
                             let isChecked = editingCartIndex > -1 ? existingOptionsArray.includes(choice.name) : (choiceIndex === 0 && inputType === 'radio');
-                            
+
                             groupHtml += `
                                 <label class="option-label">
-                                    <span>${choice.name} <strong style="color: var(--primary);">${priceText}</strong></span>
-                                    <input type="${inputType}" name="${inputName}" value="${choice.name}" data-price="${choice.price || 0}" ${isChecked ? 'checked' : ''}>
+                                    <span>${esc(choice.name)} <strong style="color: var(--primary);">${priceText}</strong></span>
+                                    <input type="${inputType}" name="${inputName}" value="${esc(choice.name)}" data-price="${Number(choice.price) || 0}" ${isChecked ? 'checked' : ''}>
                                 </label>
                             `;
                         });
                     }
                     groupHtml += `</div>`;
-                    container.innerHTML += groupHtml;
+                    html += groupHtml;
                 });
+                container.innerHTML = html;
             } else {
                 container.innerHTML = '<p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">เมนูนี้ไม่มีตัวเลือกเพิ่มเติม</p>';
             }
@@ -758,15 +797,21 @@
             let customNote = document.getElementById('optCustomNote').value.trim();
             if (customNote) selectedOptionsText.push(`โน้ต: ${customNote}`);
 
-            let finalPrice = parseFloat(selectedProductForOptions.price) + extraPrice;
+            // ราคาฐานใช้ sale_price ถ้ามี (ให้ตรงกับที่ server คิดเงินจริง)
+            let basePrice = unitPrice(selectedProductForOptions);
+            let finalPrice = basePrice + extraPrice;
             let optionsTextStr = selectedOptionsText.length > 0 ? selectedOptionsText.join(', ') : 'ธรรมดา';
-            let cartKey = `${selectedProductForOptions.id}_${selectedOptionsText.sort().join('_')}_${customNote}`;
+            let cartKey = `${selectedProductForOptions.id}_${[...selectedOptionsText].sort().join('_')}_${customNote}`;
 
             if (editingCartIndex > -1) {
-                cart[editingCartIndex].options = optionsTextStr;
-                cart[editingCartIndex].selectedOptionsArray = selectedOptionsArray;
-                cart[editingCartIndex].customNote = customNote;
-                cart[editingCartIndex].price = finalPrice;
+                let item = cart[editingCartIndex];
+                item.options = optionsTextStr;
+                item.selectedOptionsArray = selectedOptionsArray;
+                item.customNote = customNote;
+                item.basePrice = basePrice;
+                item.extraPrice = extraPrice;
+                item.price = finalPrice;
+                item.cartKey = cartKey;
                 editingCartIndex = -1;
                 showAlert('แก้ไขรายการในตะกร้าเรียบร้อยแล้ว');
             } else {
@@ -778,7 +823,8 @@
                         cartKey: cartKey,
                         id: selectedProductForOptions.id,
                         name: selectedProductForOptions.name,
-                        basePrice: parseFloat(selectedProductForOptions.price),
+                        basePrice: basePrice,
+                        extraPrice: extraPrice,
                         price: finalPrice,
                         options: optionsTextStr,
                         selectedOptionsArray: selectedOptionsArray,
@@ -806,19 +852,18 @@
             if(cart.length === 0) {
                 list.innerHTML = '<p style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ตะกร้ายังว่างอยู่เลยน้า</p>';
                 document.getElementById('cartTotalPrice').innerText = '฿0';
+                currentTotal = 0;
                 return;
             }
 
-            list.innerHTML = '';
             currentTotal = 0;
-            cart.forEach((item, index) => {
-                let subtotal = item.price * item.qty;
-                currentTotal += subtotal;
-                list.innerHTML += `
+            list.innerHTML = cart.map((item, index) => {
+                currentTotal += item.price * item.qty;
+                return `
                     <div class="cart-item">
                         <div style="flex: 1; min-width: 180px;">
-                            <div style="font-weight: 600; color: var(--text-main); font-size: 0.95rem;">${item.name}</div>
-                            <div style="font-size: 0.75rem; color: var(--primary); font-weight: 500; margin-top: 2px;">(${item.options})</div>
+                            <div style="font-weight: 600; color: var(--text-main); font-size: 0.95rem;">${esc(item.name)}</div>
+                            <div style="font-size: 0.75rem; color: var(--primary); font-weight: 500; margin-top: 2px;">(${esc(item.options)})</div>
                             <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">฿${item.price} × ${item.qty}</div>
                         </div>
                         <div style="display: flex; gap: 6px; align-items: center; margin-left: auto;">
@@ -831,7 +876,7 @@
                         </div>
                     </div>
                 `;
-            });
+            }).join('');
             document.getElementById('cartTotalPrice').innerText = `฿${currentTotal}`;
         }
 
@@ -849,50 +894,83 @@
         }
 
         async function submitOrder() {
-            let name = document.getElementById('custName').value;
-            let phone = document.getElementById('custPhone').value;
+            if (isSubmittingOrder) return;
+
+            let name = document.getElementById('custName').value.trim();
+            let phone = document.getElementById('custPhone').value.trim();
             let date = document.getElementById('custDate').value;
             let time = document.getElementById('custTime').value;
 
             if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return; }
+            if(cart.length === 0) { showAlert('ตะกร้ายังว่างอยู่ กรุณาเลือกเมนูก่อนนะค้า'); return; }
 
-            let orderData = { customer_name: name, phone: phone, delivery_date: date, delivery_time: time, items: cart };
+            // ส่งเฉพาะ id, qty และ 'ชื่อ' ตัวเลือกที่เลือก — server คิดราคาทั้งหมดเองจากตาราง products
+            let orderData = {
+                customer_name: name,
+                phone: phone,
+                delivery_date: date,
+                delivery_time: time,
+                items: cart.map(i => ({
+                    id: i.id,
+                    qty: i.qty,
+                    selected_options: i.selectedOptionsArray || [],
+                    options: i.options,
+                    customNote: i.customNote || ''
+                }))
+            };
 
+            isSubmittingOrder = true;
             try {
                 let res = await fetch('/api/order', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(orderData)
                 });
-                let data = await res.json();
+                let data = await res.json().catch(() => ({}));
                 if(res.ok) {
                     currentOrderId = data.order_id;
-                    openPaymentModal(data.order_id, data.total);
-                } else { showAlert('เกิดข้อผิดพลาดในการสร้างออเดอร์'); }
-            } catch(e) { console.error(e); }
+                    currentOrderTotal = data.total;
+                    await openPaymentModal(data.order_id, data.total);
+                } else {
+                    showAlert(data.error || data.message || 'เกิดข้อผิดพลาดในการสร้างออเดอร์');
+                }
+            } catch(e) {
+                console.error(e);
+                showAlert('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่อีกครั้ง');
+            } finally {
+                isSubmittingOrder = false;
+            }
         }
 
         async function openPaymentModal(orderId, total) {
-            document.getElementById('modalOrderId').innerText = `Order #${orderId}`;
-            document.getElementById('modalAmount').innerText = `฿${total}`;
-            
-            let res = await fetch('/api/payment/qr', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({amount: total})
-            });
-            let data = await res.json();
-            document.getElementById('qrImage').src = data.qr_image;
-            document.getElementById('paymentModal').style.display = 'flex';
+            try {
+                let res = await fetch('/api/payment/qr', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({amount: total})
+                });
+                let data = await res.json();
+                if (!res.ok || !data.qr_image) throw new Error('QR error');
+
+                document.getElementById('modalOrderId').innerText = `Order #${orderId}`;
+                document.getElementById('modalAmount').innerText = `฿${total}`;
+                document.getElementById('qrImage').src = data.qr_image;
+                document.getElementById('slipFile').value = '';
+                document.getElementById('paymentModal').style.display = 'flex';
+            } catch (e) {
+                console.error(e);
+                showAlert('สร้าง QR ชำระเงินไม่สำเร็จ กรุณากดยืนยันออเดอร์ใหม่อีกครั้ง');
+            }
         }
 
         async function uploadSlip() {
             if (isSubmittingSlip) return;
 
             let fileInput = document.getElementById('slipFile');
-            if(fileInput.files.length === 0) { 
-                showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า'); 
-                return; 
+            if (!currentOrderId) { showAlert('ไม่พบออเดอร์ กรุณากดยืนยันออเดอร์ใหม่อีกครั้ง'); return; }
+            if(fileInput.files.length === 0) {
+                showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า');
+                return;
             }
 
             isSubmittingSlip = true;
@@ -901,9 +979,10 @@
             btn.style.opacity = '0.6';
             btn.style.cursor = 'not-allowed';
 
-            let countdown = 20; 
+            // ล็อกปุ่ม 20 วินาทีกันกดซ้ำ (การตรวจสลิปฝั่ง server ใช้เวลาได้ถึง ~15 วินาที)
+            let countdown = 20;
             let originalText = btn.innerHTML;
-            
+
             let timer = setInterval(() => {
                 countdown--;
                 if (countdown > 0) {
@@ -913,63 +992,80 @@
                 }
             }, 1000);
 
+            const unlock = () => {
+                clearInterval(timer);
+                isSubmittingSlip = false;
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+                btn.innerHTML = originalText;
+            };
+
             let formData = new FormData();
             formData.append('order_id', currentOrderId);
             formData.append('slip', fileInput.files[0]);
 
             try {
                 let res = await fetch('/api/slip', { method: 'POST', body: formData });
-                let data = await res.json();
-                
+                let data = await res.json().catch(() => ({}));
+
                 if(res.ok && data.success) {
+                    clearInterval(timer);
                     document.getElementById('paymentModal').style.display = 'none';
-                    document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentTotal}`;
+                    document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
                     document.getElementById('successModal').style.display = 'flex';
-                    return; 
-                } else { 
-                    showAlert(data.message || 'ตรวจสอบสลิปไม่สำเร็จ'); 
+                    cart = [];
+                    updateCartCount();
+                    return;
                 }
-            } catch(e) { 
-                showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป'); 
+
+                // app.py ลบออเดอร์ทิ้งทันทีเมื่อสลิปไม่ผ่าน (400/404) จึงใช้ order_id เดิมส่งซ้ำไม่ได้
+                // → ปิดหน้าจ่ายเงิน แล้วให้ลูกค้ากด "ยืนยันออเดอร์" ใหม่ (ตะกร้ายังอยู่ครบ)
+                if (res.status === 400 || res.status === 404) {
+                    document.getElementById('paymentModal').style.display = 'none';
+                    currentOrderId = '';
+                    fileInput.value = '';
+                    showAlert((data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ') + '\n\nออเดอร์นี้ถูกยกเลิกแล้ว กรุณากด "ยืนยันออเดอร์" อีกครั้งเพื่อสร้างรายการใหม่');
+                } else {
+                    showAlert(data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ');
+                }
+            } catch(e) {
+                showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป');
             }
 
-            let checkInterval = setInterval(() => {
-                if (countdown <= 0) {
-                    clearInterval(checkInterval);
-                    isSubmittingSlip = false;
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                    btn.style.cursor = 'pointer';
-                    btn.innerHTML = originalText;
-                }
-            }, 500);
+            // ปลดล็อกปุ่มเมื่อครบเวลา
+            setTimeout(unlock, Math.max(countdown, 0) * 1000);
         }
 
         async function checkOrderStatus() {
-            let orderId = document.getElementById('searchOrderId').value.trim();
+            let orderId = document.getElementById('searchOrderId').value.trim().toUpperCase();
             if(!orderId) return;
 
+            let resultDiv = document.getElementById('orderStatusResult');
             try {
-                let res = await fetch(`/api/order/status/${orderId}`);
-                let data = await res.json();
-                let resultDiv = document.getElementById('orderStatusResult');
-                
+                let res = await fetch(`/api/order/status/${encodeURIComponent(orderId)}`);
+                let data = await res.json().catch(() => ({}));
+
                 if(res.ok) {
                     let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
+                    let orderStatus = ORDER_STATUS_TH[data.order_status] || data.order_status || '-';
                     resultDiv.innerHTML = `
                         <div style="background: #F8F9FA; padding: 16px; border-radius: 14px; border: 1.5px solid var(--border-color); text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>Order ID:</b> ${data.order_id}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>ลูกค้า:</b> ${data.customer_name}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>เบอร์โทร:</b> ${data.phone}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะการชำระ:</b> ${payStatus}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะออเดอร์:</b> ${data.order_status}</p>
-                            <p style="font-size: 0.85rem;"><b>เวลารับอาหาร:</b> ${data.delivery_date} ${data.delivery_time}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>Order ID:</b> ${esc(data.order_id)}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>ลูกค้า:</b> ${esc(data.customer_name)}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>เบอร์โทร:</b> ${esc(data.phone)}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะการชำระ:</b> ${esc(payStatus)}</p>
+                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะออเดอร์:</b> ${esc(orderStatus)}</p>
+                            <p style="font-size: 0.85rem;"><b>เวลารับอาหาร:</b> ${esc(data.delivery_date)} ${esc(data.delivery_time)}</p>
                         </div>
                     `;
                 } else {
                     resultDiv.innerHTML = '<p style="color: var(--primary); text-align: center; padding: 16px; font-size: 0.85rem;">ไม่พบหมายเลข Order นี้ในระบบ</p>';
                 }
-            } catch(e) { console.error(e); }
+            } catch(e) {
+                console.error(e);
+                resultDiv.innerHTML = '<p style="color: var(--primary); text-align: center; padding: 16px; font-size: 0.85rem;">เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่อีกครั้ง</p>';
+            }
         }
 
         function closeModal() { document.querySelectorAll('.modal:not(#alertModal)').forEach(m => m.style.display = 'none'); }
