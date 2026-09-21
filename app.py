@@ -752,6 +752,11 @@ def api_admin_products():
                 req_json.get('id') or 
                 req_json.get('product_id')
             )
+            
+            # กรณีที่ส่งมาเฉพาะการเปลี่ยนสถานะ (Toggle Status) แบบ JSON
+            if not prod_id and req_json.get('id'):
+                prod_id = req_json.get('id')
+
             if not prod_id:
                 return jsonify({'error': 'Missing product id'}), 400
 
@@ -769,86 +774,75 @@ def api_admin_products():
             except:
                 row_values = []
             
+            # ดึงค่าเก่ามาสำรองไว้
+            current_id = row_values[0] if len(row_values) > 0 else prod_id
             current_name = row_values[1] if len(row_values) > 1 else ''
             current_desc = row_values[2] if len(row_values) > 2 else ''
             current_cat = row_values[3] if len(row_values) > 3 else ''
-            current_price = row_values[4] if len(row_values) > 4 else ''
+            current_price = row_values[4] if len(row_values) > 4 else 0
             current_sale_price = row_values[5] if len(row_values) > 5 else ''
             current_image = row_values[6] if len(row_values) > 6 else ''
             current_status = row_values[7] if len(row_values) > 7 else 'active'
+            current_created = row_values[8] if len(row_values) > 8 else datetime.now().strftime('%Y-%m-%d')
             current_options = row_values[9] if len(row_values) > 9 else '[]'
 
-            if request.content_type and ('multipart/form-data' in request.content_type or 'form' in request.content_type):
-                name = request.form.get('name', current_name)
-                description = request.form.get('description', current_desc)
-                price = request.form.get('price', current_price)
-                sale_price = request.form.get('sale_price', current_sale_price)
-                category = request.form.get('category', current_cat)
-                status = request.form.get('status', current_status)
-                options_json = request.form.get('options', current_options)
-                file = request.files.get('image')
-                
-                image_url = current_image
-                if file and file.filename != '':
-                    drive = get_drive_service()
-                    if current_image:
-                        old_file_id = None
-                        if 'lh3.googleusercontent.com/d/' in current_image:
-                            old_file_id = current_image.split('/d/')[-1].split('/')[0].split('?')[0]
-                        elif 'id=' in current_image:
-                            old_file_id = current_image.split('id=')[-1].split('&')[0]
-                        if old_file_id and drive:
-                            try:
-                                drive.files().delete(fileId=old_file_id).execute()
-                            except Exception:
-                                pass
+            # ตรวจสอบว่าเป็นการเปลี่ยนสถานะด่วนผ่าน JSON หรือเป็นการแก้ไขฟอร์มเต็มรูปแบบ
+            if req_json and 'status' in req_json and not request.form:
+                new_status = req_json.get('status', current_status)
+                ws.update_cell(row_idx, 8, new_status)
+                return jsonify({'success': True})
 
-                    folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
-                    filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
-                    media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
-                    metadata = {'name': filename}
-                    if folder_id:
-                        metadata['parents'] = [folder_id]
-                    if drive:
+            # รับค่าจากฟอร์ม
+            name = request.form.get('name', current_name)
+            description = request.form.get('description', current_desc)
+            price = request.form.get('price', current_price)
+            sale_price = request.form.get('sale_price', current_sale_price)
+            category = request.form.get('category', current_cat)
+            status = request.form.get('status', current_status)
+            options_json = request.form.get('options', current_options)
+            file = request.files.get('image')
+            
+            image_url = current_image
+            if file and file.filename != '':
+                drive = get_drive_service()
+                # ลบรูปเก่าใน Drive (ถ้ามี) เพื่อประหยัดพื้นที่
+                if current_image:
+                    old_file_id = None
+                    if '/d/' in current_image:
+                        old_file_id = current_image.split('/d/')[-1].split('/')[0].split('?')[0]
+                    elif 'id=' in current_image:
+                        old_file_id = current_image.split('id=')[-1].split('&')[0]
+                    if old_file_id and drive:
                         try:
-                            created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
-                            file_id = created.get('id')
-                            try:
-                                drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
-                            except Exception:
-                                pass
-                            image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
-                        except Exception as e:
-                            print("Drive update image error:", e)
+                            drive.files().delete(fileId=old_file_id).execute()
+                        except Exception:
+                            pass
 
-                ws.update_cell(row_idx, 2, name)
-                ws.update_cell(row_idx, 3, description)
-                ws.update_cell(row_idx, 4, category)
-                ws.update_cell(row_idx, 5, price)
-                ws.update_cell(row_idx, 6, sale_price)
-                ws.update_cell(row_idx, 7, image_url)
-                ws.update_cell(row_idx, 8, status)
-                ws.update_cell(row_idx, 10, options_json)
-            else:
-                data = req_json
-                if 'status' in data:
-                    ws.update_cell(row_idx, 8, data['status'])
-                if 'price' in data:
-                    ws.update_cell(row_idx, 5, data['price'])
-                if 'sale_price' in data:
-                    ws.update_cell(row_idx, 6, data['sale_price'])
-                if 'options' in data:
-                    opt_val = data['options']
-                    if isinstance(opt_val, (list, dict)):
-                        opt_val = json.dumps(opt_val)
-                    ws.update_cell(row_idx, 10, opt_val)
-                if 'name' in data:
-                    ws.update_cell(row_idx, 2, data['name'])
-                if 'description' in data:
-                    ws.update_cell(row_idx, 3, data['description'])
-                if 'category' in data:
-                    ws.update_cell(row_idx, 4, data['category'])
-                    
+                folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+                filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
+                media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
+                metadata = {'name': filename}
+                if folder_id:
+                    metadata['parents'] = [folder_id]
+                if drive:
+                    try:
+                        created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                        file_id = created.get('id')
+                        try:
+                            drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                        except Exception:
+                            pass
+                        # ใช้ลิงก์รูปแบบ uc?export=view&id= เพื่อให้แสดงผลรูปได้ชัวร์ 100%
+                        image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+                    except Exception as e:
+                        print("Drive update image error:", e)
+
+            # อัปเดตข้อมูลยกแถว (Columns: id, name, description, category, price, sale_price, image, status, created_at, options)
+            updated_row = [
+                current_id, name, description, category, price, sale_price, image_url, status, current_created, options_json
+            ]
+            
+            ws.update(f'A{row_idx}:J{row_idx}', [updated_row])
             return jsonify({'success': True})
 
         elif request.method == 'DELETE':
