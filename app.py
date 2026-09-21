@@ -384,7 +384,8 @@ def api_upload_slip():
         created_file = drive.files().create(
             body=metadata, 
             media_body=media, 
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
         file_id = created_file.get('id')
         try:
@@ -655,7 +656,12 @@ def api_admin_products():
             if folder_id:
                 metadata['parents'] = [folder_id]
             if drive:
-                created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                created = drive.files().create(
+                    body=metadata, 
+                    media_body=media, 
+                    fields='id',
+                    supportsAllDrives=True
+                ).execute()
                 file_id = created.get('id')
                 try:
                     drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
@@ -726,7 +732,12 @@ def api_admin_products():
                 if folder_id:
                     metadata['parents'] = [folder_id]
                 if drive:
-                    created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                    created = drive.files().create(
+                        body=metadata, 
+                        media_body=media, 
+                        fields='id',
+                        supportsAllDrives=True
+                    ).execute()
                     file_id = created.get('id')
                     try:
                         drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
@@ -942,4 +953,4 @@ def api_admin_reports():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000, debug=True)
+    app.run(debug=True, port=5000)
