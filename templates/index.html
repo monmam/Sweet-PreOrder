@@ -471,8 +471,8 @@
             </div>
             
             <div class="form-group" style="text-align: left; margin-bottom: 20px;">
-                <label style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); margin-bottom: 6px;">แนบสลิปโอนเงิน</label>
-                <input type="file" id="slipFile" accept="image/png, image/jpeg, image/jpg" style="padding: 8px; background: #F8F9FA;">
+                <label style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); margin-bottom: 6px;">แนบสลิปโอนเงิน (เข้ารหัส Base64 อัตโนมัติ)</label>
+                <input type="file" id="slipFile" accept="image/png, image/jpeg, image/jpg" style="padding: 8px; background: #F8F9FA;" onchange="handleSlipFile(this)">
             </div>
 
             <button class="btn-checkout" id="btnSubmitSlip" onclick="uploadSlip()">
@@ -520,6 +520,7 @@
         let selectedProductForOptions = null;
         let editingCartIndex = -1;
         let isSubmittingSlip = false;
+        let base64SlipData = ''; // เก็บข้อมูลรูปภาพที่เข้ารหัสเป็น Base64
 
         document.addEventListener('DOMContentLoaded', () => {
             loadCategories();
@@ -606,10 +607,12 @@
             }
 
             products.forEach(p => {
+                // รองรับรูปภาพทั้งแบบ URL ปกติหรือแบบ Base64 Data URL ที่ดึงมาจากเซิร์ฟเวอร์
+                let imgSrc = p.image || 'https://via.placeholder.com/300x160?text=Food';
                 grid.innerHTML += `
                     <div class="food-card">
                         <div class="food-img-container">
-                            <img class="food-img" src="${p.image || 'https://via.placeholder.com/300x160?text=Food'}" alt="${p.name}" loading="lazy">
+                            <img class="food-img" src="${imgSrc}" alt="${p.name}" loading="lazy">
                         </div>
                         <div class="food-info">
                             <div>
@@ -882,15 +885,27 @@
                 body: JSON.stringify({amount: total})
             });
             let data = await res.json();
+            // รองรับการแสดงผล QR Code จาก Base64 หรือ URL ปกติ
             document.getElementById('qrImage').src = data.qr_image;
             document.getElementById('paymentModal').style.display = 'flex';
+        }
+
+        // ฟังก์ชันแปลงไฟล์รูปสลิปให้เป็น Base64 Data URL ฝั่ง Client
+        function handleSlipFile(input) {
+            if (input.files && input.files[0]) {
+                let reader = new FileReader();
+                reader.onload = function (e) {
+                    base64SlipData = e.target.result; // ได้สตริง Base64 พร้อมส่ง API
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
         }
 
         async function uploadSlip() {
             if (isSubmittingSlip) return;
 
             let fileInput = document.getElementById('slipFile');
-            if(fileInput.files.length === 0) { 
+            if(fileInput.files.length === 0 && !base64SlipData) { 
                 showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า'); 
                 return; 
             }
@@ -913,12 +928,18 @@
                 }
             }, 1000);
 
-            let formData = new FormData();
-            formData.append('order_id', currentOrderId);
-            formData.append('slip', fileInput.files[0]);
+            // ส่งข้อมูลสลิปในรูปแบบ JSON (Base64) ไปยังหลังบ้าน
+            let payload = {
+                order_id: currentOrderId,
+                slip_base64: base64SlipData
+            };
 
             try {
-                let res = await fetch('/api/slip', { method: 'POST', body: formData });
+                let res = await fetch('/api/slip', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload) 
+                });
                 let data = await res.json();
                 
                 if(res.ok && data.success) {
