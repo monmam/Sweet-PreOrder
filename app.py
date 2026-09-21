@@ -719,7 +719,22 @@ def api_admin_products():
                         print("Drive upload product error:", e)
 
             prod_id = f"PROD-{int(datetime.now().timestamp())}"
-            row = [prod_id, name, description, category, price, sale_price, image_url, status, datetime.now().strftime('%Y-%m-%d'), options_json]
+            created_at = datetime.now().strftime('%Y-%m-%d')
+
+            # จัดเรียงลำดับคอลัมน์ใหม่ให้ตรงเป๊ะ:
+            # id, name, description, category, price, sale_price, image, status, created_at, options
+            row = [
+                prod_id,         # 1. id
+                name,            # 2. name
+                description,     # 3. description
+                category,        # 4. category
+                price,           # 5. price
+                sale_price,      # 6. sale_price
+                image_url,       # 7. image
+                status,          # 8. status
+                created_at,      # 9. created_at
+                options_json     # 10. options
+            ]
             ws.append_row(row)
             return jsonify({'success': True})
 
