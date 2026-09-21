@@ -2,6 +2,7 @@
 import os
 import io
 import json
+import math
 import random
 import string
 import secrets
@@ -142,6 +143,59 @@ def upload_slip(file, order_id):
     return path, file_bytes
 
 
+# ============================================================
+# Helpers: validation & pricing (server is the source of truth)
+# ============================================================
+
+def parse_money(value, field='ราคา'):
+    """Return a float >= 0, or None when blank. Raises ValueError with a Thai message on bad input."""
+    if value is None or str(value).strip() == '':
+        return None
+    try:
+        num = float(str(value).strip())
+    except ValueError:
+        raise ValueError(f'{field}ต้องเป็นตัวเลข')
+    if not math.isfinite(num) or num < 0:
+        raise ValueError(f'{field}ต้องไม่ติดลบ')
+    return round(num, 2)
+
+
+def parse_options(raw):
+    """products.options may be a JSON string or an already-decoded list."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw else []
+        except Exception:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+def calc_extra_price(product, selected_names):
+    """Sum add-on prices from the product's OWN options in the DB.
+    The client only says which choices were picked; any price it sends is ignored.
+    Radio groups count at most one choice; checkbox groups can count several."""
+    selected = {str(s) for s in (selected_names or []) if s is not None}
+    extra = 0.0
+    for group in parse_options(product.get('options')):
+        if not isinstance(group, dict):
+            continue
+        choices = [c for c in (group.get('choices') or []) if isinstance(c, dict)]
+        picked = [c for c in choices if str(c.get('name')) in selected]
+        if group.get('type') != 'checkbox':
+            picked = picked[:1]
+        for c in picked:
+            try:
+                extra += max(float(c.get('price') or 0), 0.0)
+            except (TypeError, ValueError):
+                pass
+    return extra
+
+
+def mask_phone(phone):
+    p = str(phone or '')
+    return f"{p[:3]}****{p[-3:]}" if len(p) >= 7 else '***'
+
+
 # --- PromptPay QR generation (unchanged, this logic was already correct) ---
 
 def format_field(id_str, value):
@@ -261,7 +315,7 @@ def api_get_delivery_times():
 @app.route('/api/order', methods=['POST'])
 def api_create_order():
     data = request.json or {}
-    customer_name = data.get('customer_name')
+    customer_name = str(data.get('customer_name') or '').strip()[:100]
     phone = str(data.get('phone', '')).strip().zfill(10)
     delivery_date = data.get('delivery_date')
     delivery_time = data.get('delivery_time')
@@ -270,16 +324,22 @@ def api_create_order():
     if not customer_name or not phone or not delivery_date or not delivery_time or not items:
         return jsonify({'error': 'Missing required fields'}), 400
 
-    # --- SECURITY FIX: prices are looked up server-side from the Products table.
-    # The client can send whatever price it wants in the request body; we ignore it.
-    # Only the product id and quantity/options from the client are trusted. ---
-    product_ids = [str(item.get('id') or item.get('product_id') or '') for item in items]
+    # --- SECURITY: everything that affects money is computed server-side.
+    # The client only tells us WHICH product / quantity / option names were picked.
+    # Prices (base, sale, add-ons) always come from the products table, so a tampered
+    # request cannot use negative quantities or fake extra_price to pay less. ---
+    if not isinstance(items, list) or not items or len(items) > 50:
+        return jsonify({'error': 'Invalid items'}), 400
+    if any(not isinstance(i, dict) for i in items):
+        return jsonify({'error': 'Invalid items'}), 400
+
+    product_ids = list({str(i.get('id') or i.get('product_id') or '') for i in items})
     product_ids = [pid for pid in product_ids if pid]
     if not product_ids:
         return jsonify({'error': 'Invalid items'}), 400
 
     prod_res = supabase.table('products').select('*').in_('id', product_ids).execute()
-    products_by_id = {p['id']: p for p in prod_res.data}
+    products_by_id = {str(p['id']): p for p in prod_res.data}
 
     total = 0.0
     validated_items = []
@@ -288,16 +348,20 @@ def api_create_order():
         product = products_by_id.get(pid)
         if not product:
             return jsonify({'error': f'Product not found: {pid}'}), 400
+        if str(product.get('status', 'active')).lower() != 'active':
+            return jsonify({'error': f"เมนู \"{product.get('name')}\" ปิดขายแล้ว กรุณาลบออกจากตะกร้า"}), 400
+
+        try:
+            qty = int(item.get('qty', 1))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty < 1 or qty > 99:
+            return jsonify({'error': 'จำนวนสินค้าไม่ถูกต้อง'}), 400
 
         sale_price = product.get('sale_price')
         real_price = float(sale_price) if sale_price not in (None, '') else float(product.get('price', 0))
-        # extra_price (for paid options/add-ons) is still trusted from the client for now —
-        # validating it against a server-side options list is a good next hardening step,
-        # but out of scope for this pass since option pricing wasn't modeled server-side before either.
-        extra_price = float(item.get('extra_price', 0))
-        qty = int(item.get('qty', 1))
-        line_total = (real_price + extra_price) * qty
-        total += line_total
+        extra_price = calc_extra_price(product, item.get('selected_options'))
+        total += (real_price + extra_price) * qty
 
         validated_items.append({
             'id': pid,
@@ -305,7 +369,14 @@ def api_create_order():
             'price': real_price,
             'extra_price': extra_price,
             'qty': qty,
+            # display-only text for the admin (what the customer picked / wrote)
+            'options': str(item.get('options') or '')[:300],
+            'customNote': str(item.get('customNote') or '')[:200],
         })
+
+    total = round(total, 2)
+    if total <= 0:
+        return jsonify({'error': 'Invalid order total'}), 400
 
     # --- SECURITY FIX: order_id is now a hard-to-guess random token instead of a 4-digit number,
     # since /api/order/status/<order_id> has no login and previously leaked any order it could find. ---
@@ -500,7 +571,17 @@ def api_order_status(order_id):
     target = next((o for o in orders if o.get('order_id') == order_id), None)
     if not target:
         return jsonify({'error': 'Order not found'}), 404
-    return jsonify(target)
+    # No login here, so return a whitelist only (never slip_url / trans_ref / items / raw row).
+    return jsonify({
+        'order_id': target.get('order_id'),
+        'customer_name': target.get('customer_name'),
+        'phone': mask_phone(target.get('phone')),
+        'payment_status': target.get('payment_status'),
+        'order_status': target.get('order_status'),
+        'delivery_date': target.get('delivery_date'),
+        'delivery_time': target.get('delivery_time'),
+        'total': target.get('total'),
+    })
 
 
 # ============================================================
@@ -606,15 +687,26 @@ def api_admin_products():
         return jsonify(records)
 
     elif request.method == 'POST':
-        name = request.form.get('name')
+        name = (request.form.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'กรุณากรอกชื่อเมนู'}), 400
+        try:
+            price = parse_money(request.form.get('price'), 'ราคา')
+            sale_price = parse_money(request.form.get('sale_price'), 'ราคาโปรโมชัน')
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if price is None:
+            return jsonify({'error': 'กรุณากรอกราคา'}), 400
+        if sale_price is not None and sale_price >= price:
+            return jsonify({'error': 'ราคาโปรโมชันต้องน้อยกว่าราคาปกติ'}), 400
+
         description = request.form.get('description', '')
-        price = request.form.get('price', 0)
-        sale_price = request.form.get('sale_price') or None
         category = request.form.get('category', '')
         status = request.form.get('status', 'active')
         options_json = request.form.get('options', '[]')
         file = request.files.get('image')
 
+        # upload only after validation passes, so a rejected form doesn't leave an orphan image
         image_url = upload_product_image(file) if file else ''
 
         prod_id = f"PROD-{int(datetime.now().timestamp())}"
@@ -627,11 +719,12 @@ def api_admin_products():
         return jsonify({'success': True})
 
     elif request.method == 'PUT':
+        body = request.get_json(silent=True) if request.is_json else None
         prod_id = (
             request.form.get('id') or request.form.get('product_id') or
             request.args.get('id') or
-            (request.json.get('id') if request.is_json else None) or
-            (request.json.get('product_id') if request.is_json else None)
+            (body.get('id') if body else None) or
+            (body.get('product_id') if body else None)
         )
         if not prod_id:
             return jsonify({'error': 'Missing product id'}), 400
@@ -641,28 +734,44 @@ def api_admin_products():
             return jsonify({'error': 'Product not found'}), 404
         current = existing_res.data[0]
 
-        update_data = {}
-        if request.content_type and ('multipart/form-data' in request.content_type or 'form' in request.content_type):
-            update_data['name'] = request.form.get('name', current.get('name'))
-            update_data['description'] = request.form.get('description', current.get('description'))
-            update_data['category'] = request.form.get('category', current.get('category'))
-            update_data['price'] = request.form.get('price', current.get('price'))
-            update_data['sale_price'] = request.form.get('sale_price', current.get('sale_price'))
-            update_data['status'] = request.form.get('status', current.get('status'))
-            update_data['options'] = request.form.get('options', current.get('options'))
+        # Only fields actually sent are updated (form-data from the edit modal, or JSON from the status toggle).
+        incoming = body if request.is_json else request.form
+        incoming = incoming or {}
 
-            file = request.files.get('image')
-            if file and file.filename != '':
-                delete_product_image(current.get('image_url'))
-                update_data['image_url'] = upload_product_image(file)
-        else:
-            data = request.json or {}
-            for field in ['status', 'price', 'sale_price', 'name', 'description', 'category']:
-                if field in data:
-                    update_data[field] = data[field]
-            if 'options' in data:
-                opt_val = data['options']
-                update_data['options'] = json.dumps(opt_val) if isinstance(opt_val, (list, dict)) else opt_val
+        update_data = {}
+        for field in ['name', 'description', 'category', 'status']:
+            if field in incoming:
+                update_data[field] = incoming[field]
+        if 'options' in incoming:
+            opt_val = incoming['options']
+            update_data['options'] = json.dumps(opt_val) if isinstance(opt_val, (list, dict)) else opt_val
+
+        try:
+            if 'price' in incoming:
+                new_price = parse_money(incoming['price'], 'ราคา')
+                if new_price is None:
+                    return jsonify({'error': 'กรุณากรอกราคา'}), 400
+                update_data['price'] = new_price
+            if 'sale_price' in incoming:
+                # blank => None => clears the promotion (this used to write '' into a numeric column)
+                update_data['sale_price'] = parse_money(incoming['sale_price'], 'ราคาโปรโมชัน')
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+
+        # Only cross-check prices when one of them is being changed (so toggling status never fails on old data)
+        if 'price' in update_data or 'sale_price' in update_data:
+            final_price = update_data.get('price', float(current.get('price') or 0))
+            final_sale = update_data['sale_price'] if 'sale_price' in update_data else current.get('sale_price')
+            if final_sale not in (None, '') and float(final_sale) >= float(final_price):
+                return jsonify({'error': 'ราคาโปรโมชันต้องน้อยกว่าราคาปกติ'}), 400
+
+        file = request.files.get('image')
+        if file and file.filename != '':
+            delete_product_image(current.get('image_url'))
+            update_data['image_url'] = upload_product_image(file)
+
+        if not update_data:
+            return jsonify({'error': 'No fields to update'}), 400
 
         supabase.table('products').update(update_data).eq('id', prod_id).execute()
         return jsonify({'success': True})
@@ -800,10 +909,22 @@ def api_admin_reports():
             day_total = sum(float(o.get('total', 0)) for o in filtered_orders if str(o.get('created_at', '')).startswith(d_str))
             chart_data.append(day_total)
     elif period == '30days':
-        for i in range(5, -1, -1):
-            d = today - timedelta(days=i * 5)
-            chart_labels.append(d.strftime('%d/%m'))
-            chart_data.append(total_sales / 6)
+        # 6 real buckets of 5 days each, covering today-29 .. today
+        start = today - timedelta(days=29)
+        buckets = [0.0] * 6
+        for o in filtered_orders:
+            try:
+                od = datetime.strptime(str(o.get('created_at', ''))[:10], '%Y-%m-%d').date()
+            except ValueError:
+                continue
+            idx = (od - start).days // 5
+            if 0 <= idx < 6:
+                buckets[idx] += float(o.get('total', 0))
+        for k in range(6):
+            b_start = start + timedelta(days=k * 5)
+            b_end = b_start + timedelta(days=4)
+            chart_labels.append(f"{b_start.strftime('%d/%m')}-{b_end.strftime('%d/%m')}")
+            chart_data.append(buckets[k])
 
     item_counts = {}
     for o in filtered_orders:
