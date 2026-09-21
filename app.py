@@ -17,7 +17,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from PIL import Image
 import qrcode
 import requests
 
@@ -117,21 +116,6 @@ def get_sheet(sheet_name):
         except Exception as e:
             print(f"Error opening sheet {sheet_name}:", e)
     return None
-
-# --- ฟังก์ชันช่วยย่อ บีบอัด และแปลงรูปภาพเป็น Base64 (แก้ปัญหาโควต้า Drive) ---
-def process_image_to_base64(file_storage, max_size=(800, 800), quality=80):
-    try:
-        img = Image.open(file_storage)
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.thumbnail(max_size)
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=quality)
-        encoded_string = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        return f"data:image/jpeg;base64,{encoded_string}"
-    except Exception as e:
-        print("Image processing error:", e)
-        return ""
 
 # ฟังก์ชันดึงข้อมูล Orders แบบมี Cache ป้องกัน Error 429
 def get_cached_orders(force_refresh=False):
@@ -400,8 +384,7 @@ def api_upload_slip():
         created_file = drive.files().create(
             body=metadata, 
             media_body=media, 
-            fields='id',
-            supportsAllDrives=True
+            fields='id'
         ).execute()
         file_id = created_file.get('id')
         try:
@@ -662,10 +645,23 @@ def api_admin_products():
         options_json = request.form.get('options', '[]')
         file = request.files.get('image')
         
-        # บีบอัดรูปภาพและแปลงเป็น Base64 โดยตรง ป้องกันปัญหาพื้นที่ Drive เต็ม
         image_url = ''
         if file and file.filename != '':
-            image_url = process_image_to_base64(file)
+            drive = get_drive_service()
+            folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+            filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
+            media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
+            metadata = {'name': filename}
+            if folder_id:
+                metadata['parents'] = [folder_id]
+            if drive:
+                created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                file_id = created.get('id')
+                try:
+                    drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                except Exception:
+                    pass
+                image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
 
         prod_id = f"PROD-{int(datetime.now().timestamp())}"
         row = [prod_id, name, description, category, price, sale_price, image_url, status, datetime.now().strftime('%Y-%m-%d'), options_json]
@@ -710,7 +706,33 @@ def api_admin_products():
             
             image_url = current_image
             if file and file.filename != '':
-                image_url = process_image_to_base64(file)
+                drive = get_drive_service()
+                if current_image:
+                    old_file_id = None
+                    if 'lh3.googleusercontent.com/d/' in current_image:
+                        old_file_id = current_image.split('/d/')[-1].split('/')[0].split('?')[0]
+                    elif 'id=' in current_image:
+                        old_file_id = current_image.split('id=')[-1].split('&')[0]
+                    if old_file_id and drive:
+                        try:
+                            drive.files().delete(fileId=old_file_id).execute()
+                        except Exception:
+                            pass
+
+                folder_id = os.getenv('GOOGLE_DRIVE_PRODUCT_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+                filename = secure_filename(f"prod_{int(datetime.now().timestamp())}_{file.filename}")
+                media = MediaIoBaseUpload(io.BytesIO(file.read()), mimetype=file.content_type, resumable=True)
+                metadata = {'name': filename}
+                if folder_id:
+                    metadata['parents'] = [folder_id]
+                if drive:
+                    created = drive.files().create(body=metadata, media_body=media, fields='id').execute()
+                    file_id = created.get('id')
+                    try:
+                        drive.permissions().create(fileId=file_id, body={'role': 'reader', 'type': 'anyone'}).execute()
+                    except Exception:
+                        pass
+                    image_url = f"https://lh3.googleusercontent.com/d/{file_id}"
 
             ws.update_cell(row_idx, 2, name)
             ws.update_cell(row_idx, 3, description)
@@ -747,7 +769,23 @@ def api_admin_products():
         prod_id = data.get('id') or request.args.get('id')
         cell = ws.find(prod_id)
         if cell:
-            ws.delete_rows(cell.row)
+            row_idx = cell.row
+            row_values = ws.row_values(row_idx)
+            if len(row_values) > 6:
+                image_url = row_values[6]
+                file_id = None
+                if 'lh3.googleusercontent.com/d/' in image_url:
+                    file_id = image_url.split('/d/')[-1].split('/')[0].split('?')[0]
+                elif 'id=' in image_url:
+                    file_id = image_url.split('id=')[-1].split('&')[0]
+                if file_id:
+                    drive = get_drive_service()
+                    if drive:
+                        try:
+                            drive.files().delete(fileId=file_id).execute()
+                        except Exception:
+                            pass
+            ws.delete_rows(row_idx)
         return jsonify({'success': True})
 
 @app.route('/api/admin/categories', methods=['GET', 'POST', 'DELETE'])
