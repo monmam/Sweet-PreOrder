@@ -23,9 +23,7 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'your-secure-static-secret-key-here')
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False  # เปลี่ยนเป็น True หากรันบน HTTPS จริง
+app.secret_key = os.getenv('SECRET_KEY', 'fallback-secret-key')
 
 # Google API Setup (ใช้ OAuth 2.0 / Service Account สิทธิ์ทั้ง Sheets และ Drive)
 SCOPES = [
@@ -561,12 +559,6 @@ def api_admin_login():
 def api_admin_logout():
     session.pop('admin_logged_in', None)
     return jsonify({'success': True})
-
-@app.route('/api/admin/check-auth', methods=['GET'])
-def api_admin_check_auth():
-    if session.get('admin_logged_in'):
-        return jsonify({'authenticated': True})
-    return jsonify({'authenticated': False}), 401
 
 @app.route('/api/admin/dashboard', methods=['GET'])
 def api_admin_dashboard():
