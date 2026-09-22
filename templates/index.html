@@ -521,75 +521,62 @@
         let selectedProductForOptions = null;
         let editingCartIndex = -1;
         // ============================================================
-        // COOLDOWN: กันกดรัวๆ ในปุ่ม "แอคชั่นใหญ่" (บันทึก / สร้างออเดอร์ / ส่งสลิป)
-        // กดแล้วปุ่มล็อกทันที + นับถอยหลัง 20 วินาที (เปลี่ยนตัวเลขได้ที่ COOLDOWN_SECONDS)
-        // จำเวลาไว้ใน localStorage ด้วย → รีเฟรชหน้าแล้วกดใหม่ก็ยังต้องรอครบเวลา
+        // ล็อกปุ่มเฉพาะ "ช่วงที่แอคชั่นนั้นกำลังทำงานจริง" ไม่ใช่นับเวลาคงที่
+        // ปุ่มโชว์เวลาที่ผ่านไปจริง (นับขึ้นเรื่อยๆ) แล้วปลดล็อกทันทีที่ได้ผลลัพธ์กลับมา
+        // (ไม่ว่าจะสำเร็จหรือพลาด) กันสแปมกดได้เพราะระหว่างยังไม่ได้คำตอบ ปุ่มกดไม่ได้เสมอ
         // ============================================================
-        const COOLDOWN_SECONDS = 20;
-        const _cdRunning = {};   // key -> กำลังส่งคำขออยู่
-        const _cdMem = {};       // key -> เวลาสิ้นสุดคูลดาวน์ (สำรองกรณี localStorage ใช้ไม่ได้)
+        const _busy = {};        // key -> true ระหว่างที่ยังรอผลลัพธ์อยู่
+        const _busyStart = {};   // key -> เวลาที่เริ่ม (ไว้โชว์เวลาที่ผ่านไปถูกต้อง แม้ปิด-เปิดฟอร์มใหม่ระหว่างรอ)
 
-        function cdGetEnd(key) {
-            let v = _cdMem[key] || 0;
-            try { v = Math.max(v, Number(localStorage.getItem('cd:' + key)) || 0); } catch (e) {}
-            return v;
+        function _lockBtn(btn, label, startedAt) {
+            if (!btn) return;
+            if (btn._lockOrig === undefined) btn._lockOrig = btn.innerHTML;
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.style.cursor = 'not-allowed';
+            clearInterval(btn._lockTimer);
+            const tick = () => {
+                const secs = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+                btn.innerHTML = `⏳ ${label}${secs > 0 ? ` (${secs}s)` : '...'}`;
+            };
+            btn._lockTimer = setInterval(tick, 250);
+            tick();
         }
-        function cdSetEnd(key, t) { _cdMem[key] = t; try { localStorage.setItem('cd:' + key, String(t)); } catch (e) {} }
-        function cdClear(key) { delete _cdMem[key]; try { localStorage.removeItem('cd:' + key); } catch (e) {} }
 
-        function cdRelease(btn) {
-            clearInterval(btn._cdTimer);
-            btn._cdTimer = null;
-            if (btn._cdOrig !== undefined) { btn.innerHTML = btn._cdOrig; btn._cdOrig = undefined; }
+        function _unlockBtn(btn) {
+            if (!btn) return;
+            clearInterval(btn._lockTimer);
+            btn._lockTimer = null;
+            if (btn._lockOrig !== undefined) { btn.innerHTML = btn._lockOrig; btn._lockOrig = undefined; }
             btn.disabled = false;
             btn.style.opacity = '';
             btn.style.cursor = '';
         }
 
-        function cdShow(btn, key, label, endAt) {
-            clearInterval(btn._cdTimer);
-            if (btn._cdOrig === undefined) btn._cdOrig = btn.innerHTML;
-            btn.disabled = true;
-            btn.style.opacity = '0.6';
-            btn.style.cursor = 'not-allowed';
-            const tick = () => {
-                const left = Math.ceil((endAt - Date.now()) / 1000);
-                if (left > 0) btn.innerHTML = `⏳ ${label} (${left}s)`;
-                else if (_cdRunning[key]) btn.innerHTML = `⏳ ${label}...`;   // คำขอยังไม่จบ → ยังไม่ปลดล็อก
-                else cdRelease(btn);
-            };
-            btn._cdTimer = setInterval(tick, 250);
-            tick();
+        // เรียกตอน "เปิดฟอร์ม" (ปุ่มเดียวใช้ซ้ำหลายแอคชั่น เช่น เพิ่ม/แก้ไขสินค้า):
+        // sync ปุ่มให้ตรงกับสถานะจริงของแอคชั่นนี้ ไม่ใช่ค้างสถานะของแอคชั่นอื่นที่เพิ่งใช้ปุ่มเดียวกันไป
+        function syncBtnBusy(key, btn, label) {
+            if (_busy[key]) _lockBtn(btn, label, _busyStart[key]);
+            else _unlockBtn(btn);
         }
 
-        /**
-         * ครอบ action ใหญ่ๆ ด้วยคูลดาวน์
-         *  - action() ต้องคืน true ถ้า "ส่งคำขอไปจริงแล้ว" (คูลดาวน์เต็มเวลา)
-         *    คืน false ถ้าไม่ได้ส่ง (เช่น กรอกไม่ครบ / เซิร์ฟเวอร์ปฏิเสธ) → ปลดล็อกทันที ไม่ต้องรอ
-         */
-        async function runWithCooldown(key, btn, label, action, seconds = COOLDOWN_SECONDS) {
-            const now = Date.now();
-            const busyUntil = cdGetEnd(key);
-            if (busyUntil > now) {                 // ยังอยู่ในช่วงคูลดาวน์ → ไม่ทำงาน แค่โชว์นับถอยหลัง
-                if (btn) cdShow(btn, key, label, busyUntil);
-                return false;
+        async function withActionLock(key, btn, label, action) {
+            if (_busy[key]) return false;   // แอคชั่นนี้กำลังทำงานอยู่แล้ว กันกดซ้ำซ้อน
+            _busy[key] = true;
+            _busyStart[key] = Date.now();
+            _lockBtn(btn, label, _busyStart[key]);
+            let result = false;
+            try { result = await action(); }
+            catch (e) { console.error(e); result = false; }
+            finally {
+                delete _busy[key];
+                delete _busyStart[key];
+                _unlockBtn(btn);
             }
-            if (_cdRunning[key]) return false;
-
-            const endAt = now + seconds * 1000;
-            cdSetEnd(key, endAt);
-            _cdRunning[key] = true;
-            if (btn) cdShow(btn, key, label, endAt);
-
-            let started = false;
-            try { started = await action(); }
-            catch (e) { console.error(e); started = false; }
-            finally { _cdRunning[key] = false; }
-
-            if (!started) { cdClear(key); if (btn) cdRelease(btn); }
-            return started;
+            return result;
         }
-        // ---- end cooldown helpers ----
+        // ---- end action-lock helpers ----
+
 
 
         const PLACEHOLDER_IMG = 'data:image/svg+xml,' + encodeURIComponent(
@@ -963,8 +950,8 @@
         }
 
         async function submitOrder(btn) {
-            // ปุ่มนี้สร้างออเดอร์ใหม่ทุกครั้งที่กด จึงใส่คูลดาวน์กันกดรัวจนเกิดออเดอร์ซ้ำ
-            return runWithCooldown('order', btn, 'กำลังสร้างออเดอร์', async () => {
+            // ปุ่มนี้สร้างออเดอร์ใหม่ทุกครั้งที่กด จึงล็อกไว้ตลอดช่วงที่ยังไม่ได้คำตอบ กันกดรัวจนเกิดออเดอร์ซ้ำ
+            return withActionLock('order', btn, 'กำลังสร้างออเดอร์', async () => {
                 let name = document.getElementById('custName').value.trim();
                 let phone = document.getElementById('custPhone').value.trim();
                 let date = document.getElementById('custDate').value;
@@ -1033,9 +1020,9 @@
         }
 
         async function uploadSlip() {
-            // การตรวจสลิปเรียก API ภายนอกและเป็นขั้นตอนโอนเงิน → คูลดาวน์ 20 วินาทีเสมอ แม้สลิปไม่ผ่าน
+            // ตรวจสลิปอาจใช้เวลาถึง ~15 วิ (เรียก API ภายนอก) → ล็อกไว้ตลอดจนกว่าจะได้ผลตรวจจริง
             const btn = document.getElementById('btnSubmitSlip');
-            return runWithCooldown('slip', btn, 'กำลังตรวจสอบ', async () => {
+            return withActionLock('slip', btn, 'กำลังตรวจสอบ', async () => {
                 let fileInput = document.getElementById('slipFile');
                 if (!currentOrderId) { showAlert('ไม่พบออเดอร์ กรุณากดยืนยันออเดอร์ใหม่อีกครั้ง'); return false; }
                 if (fileInput.files.length === 0) { showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า'); return false; }
@@ -1070,7 +1057,7 @@
                 } catch (e) {
                     showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป');
                 }
-                return true;   // ส่งสลิปไปตรวจแล้ว → รอครบ 20 วินาทีก่อนส่งใหม่
+                return true;
             });
         }
 
