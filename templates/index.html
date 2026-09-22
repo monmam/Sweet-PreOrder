@@ -396,9 +396,15 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                 ตรวจสอบสถานะออเดอร์
             </div>
+
+            <div id="myOrdersSection" class="hidden" style="margin-bottom: 20px;">
+                <div style="font-weight: 600; font-size: 0.9rem; color: var(--text-main); margin-bottom: 10px;">ออเดอร์ของฉัน</div>
+                <div id="myOrdersList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+            </div>
+
             <div class="cart-section">
                 <div class="form-group">
-                    <label>กรอก Order ID (เช่น ORD-1A2B3C4D5E)</label>
+                    <label>หรือค้นหาด้วยเลขออเดอร์ (เช่น ORD-1A2B3C4D5E)</label>
                     <input type="text" id="searchOrderId" placeholder="ORD-XXXXXXXXXX">
                 </div>
                 <button class="btn-checkout" onclick="checkOrderStatus()">
@@ -591,6 +597,60 @@
             completed: 'เสร็จสิ้น'
         };
 
+        // ============================================================
+        // เก็บสถานะไว้ใน localStorage กันหน้าจอ "เด้ง" (รีเฟรช/ปิดแอปตอนแนบสลิป)
+        // แล้วของหาย — ตะกร้า, ออเดอร์ที่สร้างแล้วแต่ยังไม่ได้จ่าย, และออเดอร์ที่จ่ายแล้ว
+        // จะถูกกู้คืนอัตโนมัติตอนเปิดหน้าเว็บใหม่
+        // ============================================================
+        const LS_KEYS = {
+            cart: 'sweetPreorder_cart',
+            pending: 'sweetPreorder_pendingOrder',
+            myOrders: 'sweetPreorder_myOrders'
+        };
+
+        function saveCartToStorage() {
+            try { localStorage.setItem(LS_KEYS.cart, JSON.stringify(cart)); } catch (e) {}
+        }
+        function loadCartFromStorage() {
+            try {
+                let raw = localStorage.getItem(LS_KEYS.cart);
+                if (!raw) return;
+                let parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) cart = parsed;
+            } catch (e) {}
+        }
+
+        function savePendingOrder(orderId, total) {
+            try { localStorage.setItem(LS_KEYS.pending, JSON.stringify({ order_id: orderId, total: total, created_at: Date.now() })); } catch (e) {}
+        }
+        function loadPendingOrder() {
+            try {
+                let raw = localStorage.getItem(LS_KEYS.pending);
+                return raw ? JSON.parse(raw) : null;
+            } catch (e) { return null; }
+        }
+        function clearPendingOrder() {
+            try { localStorage.removeItem(LS_KEYS.pending); } catch (e) {}
+        }
+
+        function getMyOrders() {
+            try {
+                let raw = localStorage.getItem(LS_KEYS.myOrders);
+                let list = raw ? JSON.parse(raw) : [];
+                return Array.isArray(list) ? list : [];
+            } catch (e) { return []; }
+        }
+        function addToMyOrders(orderId) {
+            try {
+                let list = getMyOrders().filter(id => id !== orderId);
+                list.unshift(orderId);
+                localStorage.setItem(LS_KEYS.myOrders, JSON.stringify(list.slice(0, 15))); // เก็บล่าสุดพอ กันพื้นที่บวม
+            } catch (e) {}
+        }
+        function removeFromMyOrders(orderId) {
+            try { localStorage.setItem(LS_KEYS.myOrders, JSON.stringify(getMyOrders().filter(id => id !== orderId))); } catch (e) {}
+        }
+
         // กัน HTML/JS injection เวลานำข้อมูลจาก API ไปใส่ใน innerHTML
         function esc(v) {
             return String(v ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
@@ -614,6 +674,12 @@
             loadCategories();
             loadProducts();
             loadDeliveryTimes();
+
+            // กู้คืนตะกร้าจากรอบก่อน เผื่อหน้าจอถูกรีเฟรช/ปิดไปกลางคัน
+            loadCartFromStorage();
+            renderCart();
+            updateCartCount();
+
             // ใช้วันที่ตามเวลาเครื่องผู้ใช้ (valueAsDate ใช้ UTC ทำให้ช่วง 00:00-07:00 ของไทยได้วันเมื่อวาน)
             const d = new Date();
             const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -632,7 +698,43 @@
                     dateInput.value = tomorrow;
                 }
             });
+
+            resumePendingOrderIfAny();
         });
+
+        // ถ้าหน้าจอเด้ง/รีเฟรชระหว่างแนบสลิป ออเดอร์จะถูกสร้างไปแล้วฝั่ง server (แค่ยังไม่จ่าย)
+        // ตอนเปิดหน้าใหม่ ให้เช็คว่ายังค้างอยู่ไหม แล้วพากลับไปหน้าจ่ายเงินเดิมให้เลย ไม่ต้องสร้างออเดอร์ซ้ำ
+        async function resumePendingOrderIfAny() {
+            let pending = loadPendingOrder();
+            if (!pending || !pending.order_id) return;
+
+            // ออเดอร์ที่ยังไม่จ่ายเกิน 10 นาที จะถูกลบฝั่ง server อัตโนมัติ (ดู cleanup_pending_orders ใน app.py)
+            // เผื่อไว้ไม่เกิน 9 นาที กันเคสก้ำกึ่งที่อาจโดนลบไปพอดี
+            if (Date.now() - (pending.created_at || 0) > 9 * 60 * 1000) {
+                clearPendingOrder();
+                return;
+            }
+
+            try {
+                let res = await fetch(`/api/order/status/${encodeURIComponent(pending.order_id)}`);
+                if (res.status === 404) { clearPendingOrder(); return; }
+                let data = await res.json().catch(() => ({}));
+                if (!res.ok) return;
+
+                if (data.payment_status === 'pending') {
+                    currentOrderId = pending.order_id;
+                    currentOrderTotal = pending.total;
+                    showAlert(`พบออเดอร์ #${pending.order_id} ที่ยังแนบสลิปไม่สำเร็จ ระบบเปิดหน้าชำระเงินให้อีกครั้งค่า กรุณาแนบสลิปใหม่ได้เลย`);
+                    await openPaymentModal(pending.order_id, pending.total);
+                } else {
+                    // จ่ายไปแล้วจริงๆ (เช่นกดซ้ำตอนเน็ตช้าแล้วสำเร็จ) แค่เคลียร์ค้างไว้ ไม่ต้องรบกวนลูกค้า
+                    clearPendingOrder();
+                    addToMyOrders(pending.order_id);
+                }
+            } catch (e) {
+                // เน็ตหลุด/เซิร์ฟเวอร์ไม่ตอบ — ปล่อยไว้ก่อน ครั้งหน้าเปิดมาค่อยลองใหม่
+            }
+        }
 
         function showAlert(message, title = "แจ้งเตือนระบบ") {
             document.getElementById('alertTitle').innerText = title;
@@ -654,6 +756,7 @@
             let activeNav = document.getElementById('nav' + capitalize(tabName));
             if(activeNav) activeNav.classList.add('active');
             if(tabName === 'cart') renderCart();
+            if(tabName === 'status') renderMyOrders();
         }
 
         function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -946,6 +1049,7 @@
                 `;
             }).join('');
             document.getElementById('cartTotalPrice').innerText = `฿${currentTotal}`;
+            saveCartToStorage();
         }
 
         function changeQty(index, delta) {
@@ -1001,6 +1105,7 @@
                     if(res.ok) {
                         currentOrderId = data.order_id;
                         currentOrderTotal = data.total;
+                        savePendingOrder(data.order_id, data.total);   // กันของหายถ้าหน้าจอเด้งตอนแนบสลิป
                         await openPaymentModal(data.order_id, data.total);
                         return true;   // สร้างออเดอร์แล้ว → คูลดาวน์เต็ม 20 วินาที
                     }
@@ -1055,7 +1160,10 @@
                         document.getElementById('paymentModal').style.display = 'none';
                         document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
                         document.getElementById('successModal').style.display = 'flex';
+                        clearPendingOrder();
+                        addToMyOrders(currentOrderId);
                         cart = [];
+                        saveCartToStorage();
                         updateCartCount();
                         return true;
                     }
@@ -1065,6 +1173,7 @@
                     if (res.status === 400 || res.status === 404) {
                         document.getElementById('paymentModal').style.display = 'none';
                         currentOrderId = '';
+                        clearPendingOrder();
                         fileInput.value = '';
                         showAlert((data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ') + '\n\nออเดอร์นี้ถูกยกเลิกแล้ว กรุณากด "ยืนยันออเดอร์" อีกครั้งเพื่อสร้างรายการใหม่');
                     } else {
@@ -1077,6 +1186,51 @@
             });
         }
 
+        // การ์ดแสดงสถานะออเดอร์ ใช้ร่วมกันทั้งลิสต์ "ออเดอร์ของฉัน" อัตโนมัติ และผลค้นหาด้วยเลขออเดอร์
+        function buildOrderStatusCardHtml(data) {
+            let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
+            let orderStatus = ORDER_STATUS_TH[data.order_status] || data.order_status || '-';
+            return `
+                <div style="background: #F8F9FA; padding: 16px; border-radius: 14px; border: 1.5px solid var(--border-color); text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
+                    <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>Order ID:</b> ${esc(data.order_id)}</p>
+                    <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>ลูกค้า:</b> ${esc(data.customer_name)}</p>
+                    <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>เบอร์โทร:</b> ${esc(data.phone)}</p>
+                    <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะการชำระ:</b> ${esc(payStatus)}</p>
+                    <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะออเดอร์:</b> ${esc(orderStatus)}</p>
+                    <p style="font-size: 0.85rem;"><b>เวลารับอาหาร:</b> ${esc(data.delivery_date)} ${esc(data.delivery_time)}</p>
+                </div>
+            `;
+        }
+
+        // โชว์ออเดอร์ล่าสุดของลูกค้าคนนี้ (จำจาก localStorage ของเบราว์เซอร์) อัตโนมัติ ไม่ต้องพิมพ์เลขออเดอร์เอง
+        async function renderMyOrders() {
+            let ids = getMyOrders();
+            let section = document.getElementById('myOrdersSection');
+            let list = document.getElementById('myOrdersList');
+
+            if (ids.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+
+            section.classList.remove('hidden');
+            list.innerHTML = '<p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 8px;">กำลังโหลด...</p>';
+
+            let results = await Promise.all(ids.map(async id => {
+                try {
+                    let res = await fetch(`/api/order/status/${encodeURIComponent(id)}`);
+                    if (res.status === 404) { removeFromMyOrders(id); return null; }
+                    let data = await res.json().catch(() => null);
+                    return (res.ok && data) ? data : null;
+                } catch (e) { return null; } // เน็ตหลุด — ข้ามไปก่อน ไม่ลบออกจากลิสต์ เดี๋ยวลองใหม่รอบหน้า
+            }));
+
+            let cards = results.filter(Boolean).map(buildOrderStatusCardHtml);
+            list.innerHTML = cards.length > 0
+                ? cards.join('')
+                : '<p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 8px;">ไม่พบออเดอร์ที่บันทึกไว้</p>';
+        }
+
         async function checkOrderStatus() {
             let orderId = document.getElementById('searchOrderId').value.trim().toUpperCase();
             if(!orderId) return;
@@ -1087,18 +1241,8 @@
                 let data = await res.json().catch(() => ({}));
 
                 if(res.ok) {
-                    let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
-                    let orderStatus = ORDER_STATUS_TH[data.order_status] || data.order_status || '-';
-                    resultDiv.innerHTML = `
-                        <div style="background: #F8F9FA; padding: 16px; border-radius: 14px; border: 1.5px solid var(--border-color); text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>Order ID:</b> ${esc(data.order_id)}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>ลูกค้า:</b> ${esc(data.customer_name)}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>เบอร์โทร:</b> ${esc(data.phone)}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะการชำระ:</b> ${esc(payStatus)}</p>
-                            <p style="margin-bottom: 6px; font-size: 0.85rem;"><b>สถานะออเดอร์:</b> ${esc(orderStatus)}</p>
-                            <p style="font-size: 0.85rem;"><b>เวลารับอาหาร:</b> ${esc(data.delivery_date)} ${esc(data.delivery_time)}</p>
-                        </div>
-                    `;
+                    resultDiv.innerHTML = buildOrderStatusCardHtml(data);
+                    addToMyOrders(data.order_id);   // เจอออเดอร์จริง เก็บไว้เผื่อครั้งหน้าไม่ต้องพิมพ์ซ้ำ
                 } else {
                     resultDiv.innerHTML = '<p style="color: var(--primary); text-align: center; padding: 16px; font-size: 0.85rem;">ไม่พบหมายเลข Order นี้ในระบบ</p>';
                 }
