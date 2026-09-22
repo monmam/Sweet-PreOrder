@@ -1361,12 +1361,27 @@
                 ? `<br><b>สลิปโอนเงิน:</b> <a href="javascript:void(0);" data-slip="${esc(order.slip_url)}" onclick="openSlipModal(this.dataset.slip)" style="color: var(--primary); text-decoration: underline; font-weight: 600;">[คลิกเพื่อดูรูปสลิป]</a>`
                 : '<br><b>สลิปโอนเงิน:</b> ไม่พบหลักฐานการโอน';
 
+            // ข้อมูลผลตรวจสอบสลิปจาก Thunder API — มีเฉพาะออเดอร์ที่ตรวจสอบสำเร็จแล้ว (trans_ref ถูกเซฟ)
+            let verifyHtml = order.trans_ref
+                ? `
+                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-color);">
+                    <b>ผลตรวจสอบสลิป (Thunder API)</b><br>
+                    <b>วันที่ในสลิป:</b> ${order.slip_date ? esc(order.slip_date) : '-'} <br>
+                    <b>API Status:</b> ${order.api_status ? esc(order.api_status) : '-'} <br>
+                    <b>หมายเลขอ้างอิง:</b> ${esc(order.trans_ref)} <br>
+                    <b>ยอดเงินในสลิป:</b> ${order.paid_amount ? '฿' + fmtMoney(order.paid_amount) : '-'} <br>
+                    <b>บัญชีผู้โอน:</b> ${order.sender_name ? esc(order.sender_name) : '-'}${order.sender_bank ? ' (' + esc(order.sender_bank) + ')' : ''}${order.sender_account ? ' ' + esc(order.sender_account) : ''} <br>
+                    <b>บัญชีผู้รับ:</b> ${order.receiver_account ? esc(order.receiver_account) : '-'}
+                </div>`
+                : '';
+
             infoBox.innerHTML = `
                 <b>ชื่อลูกค้า:</b> ${esc(order.customer_name)} <br>
                 <b>เบอร์โทร:</b> ${esc(fmtPhone(order.phone))} <br>
                 <b>วัน-เวลารับอาหาร:</b> ${fmtDate(order.delivery_date)} ${esc(order.delivery_time)} น. <br>
                 <b>ยอดรวมทั้งสิ้น:</b> ฿${fmtMoney(order.total)}
                 ${slipHtml}
+                ${verifyHtml}
             `;
 
             let items = parseOrderItems(order);
