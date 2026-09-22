@@ -570,6 +570,12 @@ def api_upload_slip():
     verified = False
     trans_ref = None
     paid_amount = 0.0
+    slip_date = ''
+    api_status = None
+    sender_num = ''
+    sender_name_th = ''
+    sender_name_en = ''
+    sender_bank_short = ''
 
     if thunder_url and thunder_key:
         try:
@@ -580,7 +586,6 @@ def api_upload_slip():
             }
             payload = {
                 'image': encoded_image,
-                'matchAmount': float(expected_amount),
                 'checkDuplicate': True
             }
             resp = requests.post(thunder_url, headers=headers, json=payload, timeout=15)
@@ -593,6 +598,8 @@ def api_upload_slip():
             if resp.status_code == 200 and is_success:
                 data_field = res_json.get('data', res_json)
                 trans_ref = data_field.get('transRef') or res_json.get('transRef')
+                slip_date = data_field.get('date', '')  # ISO 8601 date from the slip itself, per Thunder v1 spec
+                api_status = res_json.get('status')
                 raw_amount = data_field.get('amount', 0)
                 if isinstance(raw_amount, dict):
                     raw_amount = raw_amount.get('amount', 0)
@@ -608,6 +615,17 @@ def api_upload_slip():
                 rcv_proxy = receiver_account.get('proxy', {}).get('account', '')
                 rcv_bank_acc = receiver_account.get('bank', {}).get('account', '')
                 rcv_target_num = rcv_proxy if rcv_proxy else rcv_bank_acc
+
+                # Sender (payer) info — same shape as receiver, per Thunder v1 spec.
+                # Previously never read at all, so it never reached the orders table.
+                sender_info = data_field.get('sender', {})
+                sender_account = sender_info.get('account', {})
+                sender_name_th = sender_account.get('name', {}).get('th', '')
+                sender_name_en = sender_account.get('name', {}).get('en', '')
+                sender_bank_short = sender_info.get('bank', {}).get('short', '')
+                sender_proxy = sender_account.get('proxy', {}).get('account', '')
+                sender_bank_acc = sender_account.get('bank', {}).get('account', '')
+                sender_num = sender_proxy if sender_proxy else sender_bank_acc
 
                 shop_number = os.getenv('PROMPTPAY_NUMBER', '').strip()
                 shop_name = os.getenv('SHOP_ACCOUNT_NAME', '').strip()
@@ -674,6 +692,13 @@ def api_upload_slip():
             'order_status': 'confirmed',
             'slip_url': slip_path,
             'paid_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'slip_date': slip_date,
+            'api_status': str(api_status) if api_status is not None else '',
+            'paid_amount': paid_amount,
+            'sender_account': sender_num,
+            'sender_name': sender_name_th or sender_name_en,
+            'sender_bank': sender_bank_short,
+            'receiver_account': rcv_target_num,
         }
         if trans_ref:
             update_data['trans_ref'] = str(trans_ref)
