@@ -145,6 +145,38 @@
         input:checked + .slider { background-color: var(--primary); }
         input:checked + .slider:before { transform: translateX(24px); }
 
+        /* ORDERS TOOLBAR: date filter + status filter tabs */
+        .orders-toolbar { display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px; }
+        .toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .toolbar-label { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-right: 2px; }
+        .date-filter-btn {
+            border: 1.5px solid var(--border-color); background: #fff; color: var(--text-muted);
+            padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: var(--transition);
+        }
+        .date-filter-btn:hover { border-color: var(--primary); color: var(--primary); }
+        .date-filter-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+        .date-picker-input {
+            border: 1.5px solid var(--border-color); border-radius: 20px; padding: 7px 14px;
+            font-size: 0.85rem; font-weight: 600; color: var(--text-main); background: #fff; cursor: pointer;
+        }
+        .date-picker-input:focus { outline: none; border-color: var(--primary); }
+        .status-filter-tab {
+            display: inline-flex; align-items: center; gap: 7px; border: 1.5px solid var(--border-color); background: #fff;
+            padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; cursor: pointer; color: var(--text-muted);
+            transition: var(--transition);
+        }
+        .status-filter-tab:hover { border-color: var(--primary); color: var(--primary); }
+        .status-filter-tab .count {
+            background: #f1f5f9; color: var(--text-muted); padding: 1px 9px; border-radius: 10px; font-size: 0.78rem; font-weight: 700;
+        }
+        .status-filter-tab.active { color: #fff; border-color: transparent; }
+        .status-filter-tab.active .count { background: rgba(255,255,255,0.25); color: #fff; }
+        .status-filter-tab[data-status="all"].active { background: #0f172a; }
+        .status-filter-tab[data-status="confirmed"].active { background: #eab308; }
+        .status-filter-tab[data-status="preparing"].active { background: #0284c7; }
+        .status-filter-tab[data-status="ready"].active { background: #16a34a; }
+        .status-filter-tab[data-status="completed"].active { background: #64748b; }
+
         /* DASHBOARD GRIDS */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 28px; }
         .stat-card { background: white; padding: 24px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); }
@@ -393,7 +425,16 @@
 
             <!-- 2. ORDERS -->
             <div id="section-orders" class="admin-section hidden">
-                <h3 style="margin-bottom: 16px; font-size: 1.15rem; font-weight: 700;">รายการออเดอร์ทั้งหมด</h3>
+                <div class="orders-toolbar">
+                    <div class="toolbar-row">
+                        <span class="toolbar-label">วันที่รับอาหาร:</span>
+                        <button class="date-filter-btn" data-filter="today" onclick="setOrderDateFilter('today')">วันนี้</button>
+                        <button class="date-filter-btn" data-filter="all" onclick="setOrderDateFilter('all')">ทั้งหมด</button>
+                        <input type="date" id="orderDatePicker" class="date-picker-input" onchange="setOrderDateFilter(this.value || 'all')">
+                    </div>
+                    <div class="toolbar-row" id="statusFilterGroup"></div>
+                </div>
+                <h3 id="ordersListTitle" style="margin-bottom: 16px; font-size: 1.15rem; font-weight: 700;">รายการออเดอร์วันนี้</h3>
                 <div class="table-responsive">
                     <table>
                         <thead>
@@ -626,6 +667,10 @@
         let reportChartInstance = null;
         let ordersById = {};
         let productsById = {};
+        let allOrders = [];
+        let orderDateFilter = 'today';   // 'today' | 'all' | 'YYYY-MM-DD'
+        let orderStatusFilter = 'all';   // 'all' | 'confirmed' | 'preparing' | 'ready' | 'completed'
+        let ordersPollTimer = null;
 
         // ============================================================
         // ล็อกปุ่มเฉพาะ "ช่วงที่แอคชั่นนั้นกำลังทำงานจริง" ไม่ใช่นับเวลาคงที่
@@ -816,8 +861,14 @@
             };
             document.getElementById('pageTitle').innerText = titles[pageName];
 
+            if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
+
             if(pageName === 'dashboard') loadDashboardData();
-            if(pageName === 'orders') loadOrders();
+            if(pageName === 'orders') {
+                loadOrders();
+                // รีเฟรชออเดอร์อัตโนมัติทุก 30 วิ ระหว่างที่หน้านี้เปิดอยู่ (ครัว/หน้าร้านเปิดค้างไว้ดูออเดอร์สด)
+                ordersPollTimer = setInterval(loadOrders, 30000);
+            }
             if(pageName === 'products') loadProducts();
             if(pageName === 'categories') loadCategories();
             if(pageName === 'delivery') loadDeliveryTimes();
@@ -941,14 +992,111 @@
             } catch (e) { console.error(e); }
         }
 
+        function todayStr() {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+
+        // 'pending' คือสถานะเก่าที่ app.py ไม่ได้สร้างใหม่แล้ว แต่ถ้าเจอข้อมูลเก่าให้นับรวมกับ 'confirmed'
+        function normalizedOrderStatus(o) {
+            let s = ORDER_STATUS_CONFIG[o.order_status] ? o.order_status : 'confirmed';
+            return s === 'pending' ? 'confirmed' : s;
+        }
+
+        const STATUS_FILTER_LIST = [
+            { key: 'all', text: 'ทั้งหมด' },
+            { key: 'confirmed', text: 'ยืนยันแล้ว' },
+            { key: 'preparing', text: 'กำลังเตรียม' },
+            { key: 'ready', text: 'พร้อมรับ' },
+            { key: 'completed', text: 'เสร็จสิ้น' }
+        ];
+
         async function loadOrders() {
             let res = await adminFetch('/api/admin/orders');
             let orders = await res.json();
             if (!res.ok || !Array.isArray(orders)) orders = [];
 
+            allOrders = orders;
             ordersById = {};
             orders.forEach(o => { ordersById[o.order_id] = o; });
 
+            renderOrders();
+        }
+
+        function setOrderDateFilter(value) {
+            orderDateFilter = value;
+            const picker = document.getElementById('orderDatePicker');
+            if (value === 'today' || value === 'all') {
+                picker.value = '';
+            } else {
+                picker.value = value;
+            }
+            renderOrders();
+        }
+
+        function setOrderStatusFilter(key) {
+            orderStatusFilter = key;
+            renderOrders();
+        }
+
+        function renderOrders() {
+            const today = todayStr();
+
+            // 1) กรองตามวันที่รับอาหาร (delivery_date) ก่อน — นี่คือขอบเขตที่ตัวเลขในแท็บสถานะจะอ้างอิงถึง
+            let dateFiltered = allOrders.filter(o => {
+                if (orderDateFilter === 'all') return true;
+                let d = String(o.delivery_date || '').slice(0, 10);
+                if (orderDateFilter === 'today') return d === today;
+                return d === orderDateFilter;
+            });
+
+            // 2) นับจำนวนต่อสถานะ (จากชุดที่กรองวันที่แล้ว) เพื่อโชว์ตัวเลขบนแท็บ
+            const counts = { all: dateFiltered.length, confirmed: 0, preparing: 0, ready: 0, completed: 0 };
+            dateFiltered.forEach(o => {
+                const s = normalizedOrderStatus(o);
+                counts[s] = (counts[s] || 0) + 1;
+            });
+
+            // 3) กรองตามสถานะที่เลือก
+            let visible = orderStatusFilter === 'all'
+                ? dateFiltered
+                : dateFiltered.filter(o => normalizedOrderStatus(o) === orderStatusFilter);
+
+            // 4) เรียงตามวัน-เวลารับอาหารจากเร็วไปช้า ให้ตรงกับลำดับที่ต้องเตรียมของจริง
+            visible = visible.slice().sort((a, b) => {
+                let da = String(a.delivery_date || ''), db = String(b.delivery_date || '');
+                if (da !== db) return da < db ? -1 : 1;
+                let ta = String(a.delivery_time || ''), tb = String(b.delivery_time || '');
+                return ta < tb ? -1 : (ta > tb ? 1 : 0);
+            });
+
+            syncOrdersToolbarUI(counts);
+            updateOrdersListTitle(dateFiltered.length);
+            renderOrdersList(visible);
+        }
+
+        function syncOrdersToolbarUI(counts) {
+            document.querySelectorAll('.date-filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.filter === orderDateFilter);
+            });
+
+            const container = document.getElementById('statusFilterGroup');
+            container.innerHTML = STATUS_FILTER_LIST.map(s => `
+                <button type="button" class="status-filter-tab ${orderStatusFilter === s.key ? 'active' : ''}" data-status="${s.key}" onclick="setOrderStatusFilter('${s.key}')">
+                    ${esc(s.text)} <span class="count">${counts[s.key] || 0}</span>
+                </button>
+            `).join('');
+        }
+
+        function updateOrdersListTitle(count) {
+            let label;
+            if (orderDateFilter === 'today') label = 'รายการออเดอร์วันนี้';
+            else if (orderDateFilter === 'all') label = 'รายการออเดอร์ทั้งหมด';
+            else label = `รายการออเดอร์วันที่ ${fmtDate(orderDateFilter)}`;
+            document.getElementById('ordersListTitle').innerText = `${label} (${count})`;
+        }
+
+        function renderOrdersList(orders) {
             let tbody = document.getElementById('ordersTableBody');
             tbody.innerHTML = '';
 
@@ -956,8 +1104,9 @@
             mobileContainer.innerHTML = '';
 
             if(orders.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">ไม่มีข้อมูลออเดอร์</td></tr>`;
-                mobileContainer.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; background: white; border-radius: 12px;">ไม่มีข้อมูลออเดอร์</div>`;
+                let msg = allOrders.length === 0 ? 'ไม่มีข้อมูลออเดอร์' : 'ไม่มีออเดอร์ตามเงื่อนไขที่เลือก';
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">${msg}</td></tr>`;
+                mobileContainer.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; background: white; border-radius: 12px;">${msg}</div>`;
                 return;
             }
 
