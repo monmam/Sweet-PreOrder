@@ -438,6 +438,16 @@ def api_create_order():
     if not customer_name or not phone or not delivery_date or not delivery_time or not items:
         return jsonify({'error': 'Missing required fields'}), 400
 
+    # --- SECURITY: never trust the client's date. Front-end already blocks picking a
+    # past date, but that's trivially bypassed by calling this endpoint directly, so
+    # re-check here too. ---
+    try:
+        parsed_delivery_date = datetime.strptime(str(delivery_date)[:10], '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid delivery_date'}), 400
+    if parsed_delivery_date < datetime.now().date():
+        return jsonify({'error': 'ไม่สามารถเลือกวันที่ผ่านมาแล้วได้'}), 400
+
     # --- SECURITY: everything that affects money is computed server-side.
     # The client only tells us WHICH product / quantity / option names were picked.
     # Prices (base, sale, add-ons) always come from the products table, so a tampered
