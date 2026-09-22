@@ -7,6 +7,7 @@ import random
 import string
 import secrets
 import time
+import threading
 from datetime import datetime, timedelta
 
 from flask import Flask, render_template, request, jsonify, session
@@ -16,6 +17,12 @@ from supabase import create_client, Client
 import qrcode
 import base64
 import requests
+
+try:
+    from PIL import Image, ImageOps
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 load_dotenv()
 
@@ -50,6 +57,55 @@ CACHE_DURATION = 15  # seconds
 # ============================================================
 # Helpers: data access
 # ============================================================
+
+# Same idea as the orders cache: products/categories/delivery-times barely change,
+# but every visitor to the customer page was re-fetching all three from Supabase on
+# every single request. A short cache removes that DB round trip almost every time,
+# and admin writes below force an immediate refresh so edits still show up right away.
+CATALOG_CACHE_DURATION = 20  # seconds
+_products_cache, _products_cache_time = None, 0
+_categories_cache, _categories_cache_time = None, 0
+_delivery_cache, _delivery_cache_time = None, 0
+
+
+def get_products_raw(force_refresh=False):
+    global _products_cache, _products_cache_time
+    now = time.time()
+    if not force_refresh and _products_cache is not None and (now - _products_cache_time) < CATALOG_CACHE_DURATION:
+        return _products_cache
+    try:
+        res = supabase.table('products').select('*').execute()
+        _products_cache, _products_cache_time = res.data, now
+        return _products_cache
+    except Exception:
+        return _products_cache if _products_cache is not None else []
+
+
+def get_categories_raw(force_refresh=False):
+    global _categories_cache, _categories_cache_time
+    now = time.time()
+    if not force_refresh and _categories_cache is not None and (now - _categories_cache_time) < CATALOG_CACHE_DURATION:
+        return _categories_cache
+    try:
+        res = supabase.table('categories').select('*').execute()
+        _categories_cache, _categories_cache_time = res.data, now
+        return _categories_cache
+    except Exception:
+        return _categories_cache if _categories_cache is not None else []
+
+
+def get_delivery_times_raw(force_refresh=False):
+    global _delivery_cache, _delivery_cache_time
+    now = time.time()
+    if not force_refresh and _delivery_cache is not None and (now - _delivery_cache_time) < CATALOG_CACHE_DURATION:
+        return _delivery_cache
+    try:
+        res = supabase.table('delivery_times').select('*').execute()
+        _delivery_cache, _delivery_cache_time = res.data, now
+        return _delivery_cache
+    except Exception:
+        return _delivery_cache if _delivery_cache is not None else []
+
 
 def get_orders(force_refresh=False):
     global _orders_cache, _cache_time
@@ -106,14 +162,71 @@ def cleanup_pending_orders():
         print('Cleanup error:', e)
 
 
+# PERFORMANCE: cleanup_pending_orders() used to run synchronously on every single
+# homepage visit, doing a full-table fetch (x2) + row-by-row deletes before the page
+# could render. That gets slower as orders pile up, and it re-ran on every visitor,
+# every refresh, and every cron ping. Now it runs in the background, at most once
+# every 5 minutes, so the page never waits on it.
+CLEANUP_INTERVAL_SECONDS = 300
+_last_cleanup_time = 0
+_cleanup_running = False
+
+
+def maybe_run_cleanup():
+    global _last_cleanup_time, _cleanup_running
+    now = time.time()
+    if _cleanup_running or (now - _last_cleanup_time) < CLEANUP_INTERVAL_SECONDS:
+        return
+    _last_cleanup_time = now
+    _cleanup_running = True
+
+    def _run():
+        global _cleanup_running
+        try:
+            cleanup_pending_orders()
+        finally:
+            _cleanup_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# PERFORMANCE: phone photos can be several MB each; every customer loads every product
+# image on the menu grid, so unresized originals make the page feel slow on mobile data.
+PRODUCT_IMAGE_MAX_DIMENSION = 1000  # px — plenty for the menu grid, even zoomed in
+PRODUCT_IMAGE_JPEG_QUALITY = 80
+
+
+def _compress_product_image(file_bytes):
+    """Re-encode as a resized JPEG. Returns (bytes, content_type, ext), or the original
+    bytes unchanged if Pillow isn't available or the file isn't an image it can read."""
+    if not _PIL_AVAILABLE:
+        return file_bytes, None, None
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)  # phone photos carry rotation in EXIF, not pixels
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        img.thumbnail((PRODUCT_IMAGE_MAX_DIMENSION, PRODUCT_IMAGE_MAX_DIMENSION))
+        out = io.BytesIO()
+        img.save(out, format='JPEG', quality=PRODUCT_IMAGE_JPEG_QUALITY, optimize=True)
+        return out.getvalue(), 'image/jpeg', '.jpg'
+    except Exception:
+        return file_bytes, None, None  # not a readable image (or corrupt) — upload as-is
+
+
 def upload_product_image(file):
     """Upload to the PUBLIC bucket. Returns a public URL, or '' on failure."""
     if not file or file.filename == '':
         return ''
     ext = os.path.splitext(secure_filename(file.filename))[1] or '.jpg'
-    path = f"prod_{int(datetime.now().timestamp())}_{secrets.token_hex(4)}{ext}"
     file_bytes = file.read()
     content_type = file.content_type or 'image/jpeg'
+
+    compressed_bytes, new_content_type, new_ext = _compress_product_image(file_bytes)
+    if new_ext:
+        file_bytes, content_type, ext = compressed_bytes, new_content_type, new_ext
+
+    path = f"prod_{int(datetime.now().timestamp())}_{secrets.token_hex(4)}{ext}"
     supabase.storage.from_(PRODUCT_IMAGE_BUCKET).upload(
         path, file_bytes, {'content-type': content_type}
     )
@@ -249,7 +362,7 @@ def generate_promptpay_payload(phone_or_id, amount=None):
 
 @app.route('/')
 def index():
-    cleanup_pending_orders()
+    maybe_run_cleanup()
     return render_template('index.html')
 
 
@@ -273,9 +386,11 @@ def admin_page():
 
 @app.route('/api/products', methods=['GET'])
 def api_get_products():
-    res = supabase.table('products').select('*').eq('status', 'active').execute()
     active_products = []
-    for r in res.data:
+    for r in get_products_raw():
+        if str(r.get('status', '')) != 'active':
+            continue
+        r = dict(r)  # copy — this endpoint mutates fields below, cache stays untouched
         options_raw = r.get('options')
         if isinstance(options_raw, str):
             try:
@@ -296,17 +411,16 @@ def api_get_products():
 
 @app.route('/api/categories', methods=['GET'])
 def api_get_categories():
-    res = supabase.table('categories').select('*').execute()
-    return jsonify(res.data)
+    return jsonify(get_categories_raw())
 
 
 @app.route('/api/delivery-times', methods=['GET'])
 def api_get_delivery_times():
-    res = supabase.table('delivery_times').select('*').execute()
     active_times = []
-    for r in res.data:
+    for r in get_delivery_times_raw():
         status = str(r.get('status', 'active')).lower().strip()
         if status in ['', 'active', 'open', 'true']:
+            r = dict(r)
             r['time'] = normalize_time_format(r.get('time', ''))
             active_times.append(r)
     return jsonify(active_times)
@@ -675,15 +789,16 @@ def api_admin_products():
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
-        res = supabase.table('products').select('*').execute()
-        records = res.data
-        for r in records:
+        records = []
+        for r in get_products_raw():
+            r = dict(r)
             options_raw = r.get('options')
             if isinstance(options_raw, str):
                 try:
                     r['options'] = json.loads(options_raw) if options_raw else []
                 except Exception:
                     r['options'] = []
+            records.append(r)
         return jsonify(records)
 
     elif request.method == 'POST':
@@ -716,6 +831,7 @@ def api_admin_products():
             'created_date': datetime.now().strftime('%Y-%m-%d'), 'options': options_json,
         }
         supabase.table('products').insert(row).execute()
+        get_products_raw(force_refresh=True)
         return jsonify({'success': True})
 
     elif request.method == 'PUT':
@@ -774,6 +890,7 @@ def api_admin_products():
             return jsonify({'error': 'No fields to update'}), 400
 
         supabase.table('products').update(update_data).eq('id', prod_id).execute()
+        get_products_raw(force_refresh=True)
         return jsonify({'success': True})
 
     elif request.method == 'DELETE':
@@ -785,6 +902,7 @@ def api_admin_products():
         if existing_res.data:
             delete_product_image(existing_res.data[0].get('image_url'))
         supabase.table('products').delete().eq('id', prod_id).execute()
+        get_products_raw(force_refresh=True)
         return jsonify({'success': True})
 
 
@@ -794,8 +912,7 @@ def api_admin_categories():
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
-        res = supabase.table('categories').select('*').execute()
-        return jsonify(res.data)
+        return jsonify(get_categories_raw())
 
     elif request.method == 'POST':
         data = request.json or {}
@@ -804,6 +921,7 @@ def api_admin_categories():
             return jsonify({'success': False, 'message': 'Missing category name'}), 400
         cat_id = f"CAT-{int(datetime.now().timestamp())}"
         supabase.table('categories').insert({'id': cat_id, 'name': name}).execute()
+        get_categories_raw(force_refresh=True)
         return jsonify({'success': True})
 
     elif request.method == 'DELETE':
@@ -812,6 +930,7 @@ def api_admin_categories():
         if not cat_id:
             return jsonify({'success': False, 'message': 'Missing id'}), 400
         supabase.table('categories').delete().eq('id', cat_id).execute()
+        get_categories_raw(force_refresh=True)
         return jsonify({'success': True})
 
 
@@ -842,10 +961,11 @@ def api_admin_delivery_times():
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
-        res = supabase.table('delivery_times').select('*').execute()
-        records = res.data
-        for r in records:
+        records = []
+        for r in get_delivery_times_raw():
+            r = dict(r)
             r['time'] = normalize_time_format(r.get('time', ''))
+            records.append(r)
         return jsonify(records)
 
     elif request.method == 'POST':
@@ -854,6 +974,7 @@ def api_admin_delivery_times():
         status = data.get('status', 'active')
         t_id = f"TIME-{int(datetime.now().timestamp())}"
         supabase.table('delivery_times').insert({'id': t_id, 'time': time_val, 'status': status}).execute()
+        get_delivery_times_raw(force_refresh=True)
         return jsonify({'success': True})
 
     elif request.method == 'PUT':
@@ -862,6 +983,7 @@ def api_admin_delivery_times():
         new_status = data.get('status')
         res = supabase.table('delivery_times').update({'status': new_status}).eq('id', t_id).execute()
         if res.data:
+            get_delivery_times_raw(force_refresh=True)
             return jsonify({'success': True})
         return jsonify({'error': 'Delivery time not found'}), 404
 
@@ -869,6 +991,7 @@ def api_admin_delivery_times():
         data = request.json or {}
         t_id = data.get('id')
         supabase.table('delivery_times').delete().eq('id', t_id).execute()
+        get_delivery_times_raw(force_refresh=True)
         return jsonify({'success': True})
 
 
