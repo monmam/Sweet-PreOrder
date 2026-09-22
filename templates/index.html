@@ -617,9 +617,21 @@
             // ใช้วันที่ตามเวลาเครื่องผู้ใช้ (valueAsDate ใช้ UTC ทำให้ช่วง 00:00-07:00 ของไทยได้วันเมื่อวาน)
             const d = new Date();
             const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const t = new Date(d);
+            t.setDate(t.getDate() + 1);
+            const tomorrow = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+
             const dateInput = document.getElementById('custDate');
-            dateInput.min = today;
-            dateInput.value = today;
+            dateInput.min = today;        // ห้ามเลือกวันที่ผ่านมาแล้ว
+            dateInput.value = tomorrow;   // ค่าเริ่มต้นเป็นพรุ่งนี้ เพราะเป็นระบบพรีออเดอร์
+
+            // กันไว้อีกชั้น เผื่อบางเบราว์เซอร์ยอมให้พิมพ์วันที่ในอดีตเข้ามาทั้งที่ตั้ง min ไว้แล้ว
+            dateInput.addEventListener('change', () => {
+                if (dateInput.value && dateInput.value < today) {
+                    showAlert('ไม่สามารถเลือกวันที่ผ่านมาแล้วได้ กรุณาเลือกวันที่ปัจจุบันหรือวันถัดไป');
+                    dateInput.value = tomorrow;
+                }
+            });
         });
 
         function showAlert(message, title = "แจ้งเตือนระบบ") {
@@ -959,6 +971,10 @@
 
                 if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return false; }
                 if(cart.length === 0) { showAlert('ตะกร้ายังว่างอยู่ กรุณาเลือกเมนูก่อนนะค้า'); return false; }
+
+                const todayCheck = new Date();
+                const todayStr = `${todayCheck.getFullYear()}-${String(todayCheck.getMonth() + 1).padStart(2, '0')}-${String(todayCheck.getDate()).padStart(2, '0')}`;
+                if(date < todayStr) { showAlert('วันที่รับอาหารที่เลือกผ่านมาแล้ว กรุณาเลือกวันที่ใหม่'); return false; }
 
                 // ส่งเฉพาะ id, qty และ 'ชื่อ' ตัวเลือกที่เลือก — server คิดราคาทั้งหมดเองจากตาราง products
                 let orderData = {

@@ -177,6 +177,40 @@
         .status-filter-tab[data-status="ready"].active { background: #16a34a; }
         .status-filter-tab[data-status="completed"].active { background: #64748b; }
 
+        /* VIEW TOGGLE (รายการออเดอร์ / สรุปสิ่งที่ต้องทำ) */
+        .view-toggle-btn {
+            display: inline-flex; align-items: center; gap: 7px; border: 1.5px solid var(--border-color); background: #fff;
+            padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; cursor: pointer; color: var(--text-muted);
+            transition: var(--transition);
+        }
+        .view-toggle-btn:hover { border-color: var(--primary); color: var(--primary); }
+        .view-toggle-btn.active { background: var(--text-main); border-color: var(--text-main); color: #fff; }
+
+        /* KITCHEN VIEW: สรุปเมนูที่ต้องทำ + รายการออเดอร์ที่ยังไม่เริ่มเตรียม */
+        .kitchen-summary-card {
+            background: white; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color);
+            padding: 20px 24px; margin-bottom: 20px;
+        }
+        .kitchen-summary-grid { display: flex; flex-direction: column; gap: 4px; }
+        .kitchen-summary-item {
+            display: flex; align-items: baseline; gap: 10px; padding: 10px 4px; border-bottom: 1px dashed var(--border-color); font-size: 0.98rem;
+        }
+        .kitchen-summary-item:last-child { border-bottom: none; }
+        .kitchen-summary-qty { font-weight: 800; color: var(--primary); min-width: 40px; font-size: 1.05rem; }
+        .kitchen-summary-name { font-weight: 600; color: var(--text-main); }
+        .kitchen-summary-opt { font-weight: 500; color: var(--text-muted); }
+        .kitchen-orders-list { display: flex; flex-direction: column; gap: 14px; }
+        .kitchen-order-card { background: white; border: 1.5px solid var(--border-color); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); }
+        .kitchen-order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .kitchen-order-id { font-weight: 700; color: var(--primary); font-size: 1.02rem; }
+        .kitchen-order-time { font-weight: 600; color: var(--text-muted); font-size: 0.85rem; }
+        .kitchen-order-customer { font-size: 0.88rem; color: var(--text-muted); margin-bottom: 12px; }
+        .kitchen-order-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; padding-left: 2px; border-left: 3px solid var(--primary-light); }
+        .kitchen-order-item { padding-left: 10px; font-size: 0.92rem; color: var(--text-main); }
+        .kitchen-order-item-opt { display: block; font-size: 0.8rem; color: #d97706; padding-left: 10px; }
+        .kitchen-order-item-note { display: block; font-size: 0.8rem; color: #ef4444; padding-left: 10px; }
+        .kitchen-order-footer { display: flex; justify-content: flex-end; border-top: 1px solid var(--border-color); padding-top: 10px; }
+
         /* DASHBOARD GRIDS */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 28px; }
         .stat-card { background: white; padding: 24px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); }
@@ -427,6 +461,11 @@
             <div id="section-orders" class="admin-section hidden">
                 <div class="orders-toolbar">
                     <div class="toolbar-row">
+                        <span class="toolbar-label">มุมมอง:</span>
+                        <button class="view-toggle-btn" data-view="list" onclick="setOrdersView('list')"><i class="fas fa-list"></i> รายการออเดอร์</button>
+                        <button class="view-toggle-btn" data-view="kitchen" onclick="setOrdersView('kitchen')"><i class="fas fa-utensils"></i> สรุปสิ่งที่ต้องทำ</button>
+                    </div>
+                    <div class="toolbar-row">
                         <span class="toolbar-label">วันที่รับอาหาร:</span>
                         <button class="date-filter-btn" data-filter="today" onclick="setOrderDateFilter('today')">วันนี้</button>
                         <button class="date-filter-btn" data-filter="all" onclick="setOrderDateFilter('all')">ทั้งหมด</button>
@@ -435,7 +474,8 @@
                     <div class="toolbar-row" id="statusFilterGroup"></div>
                 </div>
                 <h3 id="ordersListTitle" style="margin-bottom: 16px; font-size: 1.15rem; font-weight: 700;">รายการออเดอร์วันนี้</h3>
-                <div class="table-responsive">
+                <div id="orderListView">
+                    <div class="table-responsive">
                     <table>
                         <thead>
                             <tr>
@@ -453,6 +493,12 @@
                     </table>
                 </div>
                 <div id="mobileOrdersContainer" class="mobile-orders-container"></div>
+                </div>
+
+                <div id="kitchenView" class="hidden">
+                    <div id="kitchenSummaryCard" class="kitchen-summary-card"></div>
+                    <div id="kitchenOrdersList" class="kitchen-orders-list"></div>
+                </div>
             </div>
 
             <!-- 3. PRODUCTS -->
@@ -670,6 +716,7 @@
         let allOrders = [];
         let orderDateFilter = 'today';   // 'today' | 'all' | 'YYYY-MM-DD'
         let orderStatusFilter = 'all';   // 'all' | 'confirmed' | 'preparing' | 'ready' | 'completed'
+        let ordersView = 'list';         // 'list' | 'kitchen'
         let ordersPollTimer = null;
 
         // ============================================================
@@ -1039,6 +1086,20 @@
             renderOrders();
         }
 
+        function setOrdersView(view) {
+            ordersView = view;
+            renderOrders();
+        }
+
+        // items เก็บเป็น JSON string หรือ array ก็ได้แล้วแต่ config ของ DB จึงต้องกันสองแบบไว้เสมอ
+        function parseOrderItems(order) {
+            let items = order.items;
+            if (typeof items === 'string') {
+                try { items = JSON.parse(items); } catch (e) { items = []; }
+            }
+            return Array.isArray(items) ? items : [];
+        }
+
         function renderOrders() {
             const today = todayStr();
 
@@ -1057,6 +1118,21 @@
                 counts[s] = (counts[s] || 0) + 1;
             });
 
+            syncOrdersToolbarUI(counts);
+
+            if (ordersView === 'kitchen') {
+                document.getElementById('orderListView').classList.add('hidden');
+                document.getElementById('kitchenView').classList.remove('hidden');
+                document.getElementById('statusFilterGroup').classList.add('hidden');
+                // มุมมองครัว = คิวที่ยังไม่เริ่มเตรียม (ยืนยันแล้ว) เท่านั้น ไม่ผูกกับแท็บสถานะที่เลือกไว้
+                renderKitchenView(dateFiltered);
+                updateOrdersListTitle(dateFiltered.length, true);
+                return;
+            }
+            document.getElementById('orderListView').classList.remove('hidden');
+            document.getElementById('kitchenView').classList.add('hidden');
+            document.getElementById('statusFilterGroup').classList.remove('hidden');
+
             // 3) กรองตามสถานะที่เลือก
             let visible = orderStatusFilter === 'all'
                 ? dateFiltered
@@ -1070,12 +1146,15 @@
                 return ta < tb ? -1 : (ta > tb ? 1 : 0);
             });
 
-            syncOrdersToolbarUI(counts);
-            updateOrdersListTitle(dateFiltered.length);
+            updateOrdersListTitle(dateFiltered.length, false);
             renderOrdersList(visible);
         }
 
         function syncOrdersToolbarUI(counts) {
+            document.querySelectorAll('.view-toggle-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.view === ordersView);
+            });
+
             document.querySelectorAll('.date-filter-btn').forEach(b => {
                 b.classList.toggle('active', b.dataset.filter === orderDateFilter);
             });
@@ -1088,12 +1167,90 @@
             `).join('');
         }
 
-        function updateOrdersListTitle(count) {
+        function updateOrdersListTitle(count, isKitchen) {
             let label;
+            if (isKitchen) {
+                if (orderDateFilter === 'today') label = 'สรุปสิ่งที่ต้องทำวันนี้';
+                else if (orderDateFilter === 'all') label = 'สรุปสิ่งที่ต้องทำ (ทุกวันที่)';
+                else label = `สรุปสิ่งที่ต้องทำวันที่ ${fmtDate(orderDateFilter)}`;
+                document.getElementById('ordersListTitle').innerText = label;
+                return;
+            }
             if (orderDateFilter === 'today') label = 'รายการออเดอร์วันนี้';
             else if (orderDateFilter === 'all') label = 'รายการออเดอร์ทั้งหมด';
             else label = `รายการออเดอร์วันที่ ${fmtDate(orderDateFilter)}`;
             document.getElementById('ordersListTitle').innerText = `${label} (${count})`;
+        }
+
+        function renderKitchenView(dateFilteredOrders) {
+            // คิวที่ต้องทำ = เฉพาะออเดอร์ที่ยัง "ยืนยันแล้ว" ยังไม่ถูกกดเริ่มเตรียม
+            let toCook = dateFilteredOrders.filter(o => normalizedOrderStatus(o) === 'confirmed');
+            toCook = toCook.slice().sort((a, b) => {
+                let da = String(a.delivery_date || ''), db = String(b.delivery_date || '');
+                if (da !== db) return da < db ? -1 : 1;
+                let ta = String(a.delivery_time || ''), tb = String(b.delivery_time || '');
+                return ta < tb ? -1 : (ta > tb ? 1 : 0);
+            });
+
+            const summaryCard = document.getElementById('kitchenSummaryCard');
+            const listContainer = document.getElementById('kitchenOrdersList');
+
+            if (toCook.length === 0) {
+                summaryCard.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 12px;">ไม่มีออเดอร์ที่รอทำในช่วงเวลานี้ 🎉</div>`;
+                listContainer.innerHTML = '';
+                return;
+            }
+
+            // รวมยอดเมนูที่ต้องทำจากทุกออเดอร์ในคิว (แยกตามชื่อเมนู + ตัวเลือกที่เลือก)
+            const itemMap = {};
+            toCook.forEach(o => {
+                parseOrderItems(o).forEach(it => {
+                    let key = `${it.name}|${it.options || ''}`;
+                    if (!itemMap[key]) itemMap[key] = { name: it.name, options: it.options || '', qty: 0 };
+                    itemMap[key].qty += Number(it.qty || 1);
+                });
+            });
+            let summaryItems = Object.values(itemMap).sort((a, b) => b.qty - a.qty);
+
+            summaryCard.innerHTML = `
+                <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 6px;">สรุปเมนูที่ต้องทำ</h4>
+                <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 14px;">รวมจาก ${toCook.length} ออเดอร์ที่ยืนยันแล้วแต่ยังไม่เริ่มเตรียม</div>
+                <div class="kitchen-summary-grid">
+                    ${summaryItems.map(it => `
+                        <div class="kitchen-summary-item">
+                            <span class="kitchen-summary-qty">${it.qty}x</span>
+                            <span class="kitchen-summary-name">${esc(it.name)}${it.options ? `<span class="kitchen-summary-opt"> — ${esc(it.options)}</span>` : ''}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+
+            listContainer.innerHTML = toCook.map(o => {
+                let items = parseOrderItems(o);
+                let itemsHtml = items.map(it => `
+                    <div class="kitchen-order-item">
+                        ${esc(Number(it.qty || 1))}x ${esc(it.name)}
+                        ${it.options ? `<span class="kitchen-order-item-opt">${esc(it.options)}</span>` : ''}
+                        ${it.customNote ? `<span class="kitchen-order-item-note">หมายเหตุ: ${esc(it.customNote)}</span>` : ''}
+                    </div>
+                `).join('');
+
+                return `
+                    <div class="kitchen-order-card">
+                        <div class="kitchen-order-header">
+                            <span class="kitchen-order-id">#${esc(o.order_id)}</span>
+                            <span class="kitchen-order-time">${fmtDate(o.delivery_date)} ${esc(o.delivery_time)} น.</span>
+                        </div>
+                        <div class="kitchen-order-customer">${esc(o.customer_name)} · ${esc(fmtPhone(o.phone))}</div>
+                        <div class="kitchen-order-items">${itemsHtml}</div>
+                        <div class="kitchen-order-footer">
+                            <span class="status-badge status-pending" data-id="${esc(o.order_id)}" data-status="confirmed" onclick="cycleOrderStatus(this.dataset.id, this.dataset.status)" title="คลิกเพื่อเปลี่ยนสถานะ">
+                                <i class="fas fa-clock"></i> ยืนยันแล้ว <i class="fas fa-sync-alt" style="font-size: 0.7rem; opacity: 0.6; margin-left: 2px;"></i>
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
         }
 
         function renderOrdersList(orders) {
@@ -1212,10 +1369,7 @@
                 ${slipHtml}
             `;
 
-            let items = order.items;
-            if (typeof items === 'string') {
-                try { items = JSON.parse(items); } catch (e) { items = []; }
-            }
+            let items = parseOrderItems(order);
 
             let itemsContainer = document.getElementById('orderItemsContainer');
             itemsContainer.innerHTML = '';
