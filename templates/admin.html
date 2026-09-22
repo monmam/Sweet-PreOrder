@@ -627,6 +627,77 @@
         let ordersById = {};
         let productsById = {};
 
+        // ============================================================
+        // COOLDOWN: กันกดรัวๆ ในปุ่ม "แอคชั่นใหญ่" (บันทึก / สร้างออเดอร์ / ส่งสลิป)
+        // กดแล้วปุ่มล็อกทันที + นับถอยหลัง 20 วินาที (เปลี่ยนตัวเลขได้ที่ COOLDOWN_SECONDS)
+        // จำเวลาไว้ใน localStorage ด้วย → รีเฟรชหน้าแล้วกดใหม่ก็ยังต้องรอครบเวลา
+        // ============================================================
+        const COOLDOWN_SECONDS = 20;
+        const _cdRunning = {};   // key -> กำลังส่งคำขออยู่
+        const _cdMem = {};       // key -> เวลาสิ้นสุดคูลดาวน์ (สำรองกรณี localStorage ใช้ไม่ได้)
+
+        function cdGetEnd(key) {
+            let v = _cdMem[key] || 0;
+            try { v = Math.max(v, Number(localStorage.getItem('cd:' + key)) || 0); } catch (e) {}
+            return v;
+        }
+        function cdSetEnd(key, t) { _cdMem[key] = t; try { localStorage.setItem('cd:' + key, String(t)); } catch (e) {} }
+        function cdClear(key) { delete _cdMem[key]; try { localStorage.removeItem('cd:' + key); } catch (e) {} }
+
+        function cdRelease(btn) {
+            clearInterval(btn._cdTimer);
+            btn._cdTimer = null;
+            if (btn._cdOrig !== undefined) { btn.innerHTML = btn._cdOrig; btn._cdOrig = undefined; }
+            btn.disabled = false;
+            btn.style.opacity = '';
+            btn.style.cursor = '';
+        }
+
+        function cdShow(btn, key, label, endAt) {
+            clearInterval(btn._cdTimer);
+            if (btn._cdOrig === undefined) btn._cdOrig = btn.innerHTML;
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.style.cursor = 'not-allowed';
+            const tick = () => {
+                const left = Math.ceil((endAt - Date.now()) / 1000);
+                if (left > 0) btn.innerHTML = `⏳ ${label} (${left}s)`;
+                else if (_cdRunning[key]) btn.innerHTML = `⏳ ${label}...`;   // คำขอยังไม่จบ → ยังไม่ปลดล็อก
+                else cdRelease(btn);
+            };
+            btn._cdTimer = setInterval(tick, 250);
+            tick();
+        }
+
+        /**
+         * ครอบ action ใหญ่ๆ ด้วยคูลดาวน์
+         *  - action() ต้องคืน true ถ้า "ส่งคำขอไปจริงแล้ว" (คูลดาวน์เต็มเวลา)
+         *    คืน false ถ้าไม่ได้ส่ง (เช่น กรอกไม่ครบ / เซิร์ฟเวอร์ปฏิเสธ) → ปลดล็อกทันที ไม่ต้องรอ
+         */
+        async function runWithCooldown(key, btn, label, action, seconds = COOLDOWN_SECONDS) {
+            const now = Date.now();
+            const busyUntil = cdGetEnd(key);
+            if (busyUntil > now) {                 // ยังอยู่ในช่วงคูลดาวน์ → ไม่ทำงาน แค่โชว์นับถอยหลัง
+                if (btn) cdShow(btn, key, label, busyUntil);
+                return false;
+            }
+            if (_cdRunning[key]) return false;
+
+            const endAt = now + seconds * 1000;
+            cdSetEnd(key, endAt);
+            _cdRunning[key] = true;
+            if (btn) cdShow(btn, key, label, endAt);
+
+            let started = false;
+            try { started = await action(); }
+            catch (e) { console.error(e); started = false; }
+            finally { _cdRunning[key] = false; }
+
+            if (!started) { cdClear(key); if (btn) cdRelease(btn); }
+            return started;
+        }
+        // ---- end cooldown helpers ----
+
         // กัน HTML/JS injection (ชื่อลูกค้า/โน้ตมาจากหน้าเว็บสาธารณะ จึงห้ามใส่ใน innerHTML ตรงๆ)
         function esc(v) {
             return String(v ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
@@ -966,16 +1037,23 @@
             mobileContainer.innerHTML = cardsHtml;
         }
 
+        const _statusBusy = {};
         async function cycleOrderStatus(orderId, currentStatus) {
-            const flow = {
-                'pending': 'preparing',
-                'confirmed': 'preparing',
-                'preparing': 'ready',
-                'ready': 'completed',
-                'completed': 'confirmed'
-            };
-            let nextStatus = flow[currentStatus] || 'confirmed';
-            await updateOrderStatus(orderId, nextStatus);
+            if (_statusBusy[orderId]) return;   // กันดับเบิลคลิกระหว่างรออัปเดต
+            _statusBusy[orderId] = true;
+            try {
+                const flow = {
+                    'pending': 'preparing',
+                    'confirmed': 'preparing',
+                    'preparing': 'ready',
+                    'ready': 'completed',
+                    'completed': 'confirmed'
+                };
+                let nextStatus = flow[currentStatus] || 'confirmed';
+                await updateOrderStatus(orderId, nextStatus);
+            } finally {
+                _statusBusy[orderId] = false;
+            }
         }
 
         function openOrderDetailModal(orderOrId) {
@@ -1056,7 +1134,7 @@
                     body: JSON.stringify({order_id: orderId, order_status: status})
                 });
                 if (res.ok) {
-                    loadOrders();
+                    await loadOrders();
                 } else {
                     alert('ไม่สามารถอัปเดตสถานะได้ กรุณาลองใหม่อีกครั้ง');
                 }
@@ -1255,46 +1333,52 @@
 
         async function saveProduct(e) {
             e.preventDefault();
+            const btn = e.submitter || document.querySelector('#productForm button[type="submit"]');
             let id = document.getElementById('pId').value;
-            let imageFile = document.getElementById('pImage').files[0];
 
-            let optionsArray = [];
-            document.querySelectorAll('.option-group-item').forEach(groupEl => {
-                let groupTitle = groupEl.querySelector('.opt-group-title').value;
-                let groupType = groupEl.querySelector('.opt-group-type').value;
-                if (groupTitle) {
-                    let choices = [];
-                    groupEl.querySelectorAll('.choices-container > div').forEach(choiceRow => {
-                        let cName = choiceRow.querySelector('.opt-choice-name').value;
-                        let rawPrice = choiceRow.querySelector('.opt-choice-price').value;
-                        let cPrice = (rawPrice !== "" && !isNaN(rawPrice)) ? parseFloat(rawPrice) : 0;
-                        if (cName) choices.push({ name: cName, price: cPrice });
-                    });
-                    optionsArray.push({ title: groupTitle, type: groupType, choices: choices });
+            // คูลดาวน์ 20 วินาทีต่อสินค้า (สินค้าใหม่ใช้อีกกุญแจหนึ่ง) กันกดบันทึกรัวจนเกิดสินค้าซ้ำ
+            return runWithCooldown('saveProduct:' + (id || 'new'), btn, 'กำลังบันทึก', async () => {
+                let imageFile = document.getElementById('pImage').files[0];
+
+                let optionsArray = [];
+                document.querySelectorAll('.option-group-item').forEach(groupEl => {
+                    let groupTitle = groupEl.querySelector('.opt-group-title').value;
+                    let groupType = groupEl.querySelector('.opt-group-type').value;
+                    if (groupTitle) {
+                        let choices = [];
+                        groupEl.querySelectorAll('.choices-container > div').forEach(choiceRow => {
+                            let cName = choiceRow.querySelector('.opt-choice-name').value;
+                            let rawPrice = choiceRow.querySelector('.opt-choice-price').value;
+                            let cPrice = (rawPrice !== "" && !isNaN(rawPrice)) ? parseFloat(rawPrice) : 0;
+                            if (cName) choices.push({ name: cName, price: cPrice });
+                        });
+                        optionsArray.push({ title: groupTitle, type: groupType, choices: choices });
+                    }
+                });
+
+                let formData = new FormData();
+                if (id && id.trim() !== "") formData.append('id', id);
+                formData.append('name', document.getElementById('pName').value);
+                formData.append('category', document.getElementById('pCategory').value);
+                formData.append('price', document.getElementById('pPrice').value);
+                formData.append('sale_price', document.getElementById('pSalePrice').value); // ว่าง = ยกเลิกโปรโมชัน
+                formData.append('description', document.getElementById('pDesc').value);
+                formData.append('options', JSON.stringify(optionsArray));
+                if (imageFile) formData.append('image', imageFile);
+
+                let method = (id && id.trim() !== "") ? 'PUT' : 'POST';
+                let res = await adminFetch('/api/admin/products', { method: method, body: formData });
+
+                if(res.ok) {
+                    closeProductModal();
+                    loadProducts();
+                    showSuccessModal('บันทึกข้อมูลสินค้าเรียบร้อยแล้ว');
+                    return true;
                 }
-            });
-
-            let formData = new FormData();
-            if (id && id.trim() !== "") formData.append('id', id);
-            formData.append('name', document.getElementById('pName').value);
-            formData.append('category', document.getElementById('pCategory').value);
-            formData.append('price', document.getElementById('pPrice').value);
-            formData.append('sale_price', document.getElementById('pSalePrice').value); // ว่าง = ยกเลิกโปรโมชัน
-            formData.append('description', document.getElementById('pDesc').value);
-            formData.append('options', JSON.stringify(optionsArray));
-            if (imageFile) formData.append('image', imageFile);
-
-            let method = (id && id.trim() !== "") ? 'PUT' : 'POST';
-            let res = await adminFetch('/api/admin/products', { method: method, body: formData });
-
-            if(res.ok) { 
-                closeProductModal(); 
-                loadProducts(); 
-                showSuccessModal('บันทึกข้อมูลสินค้าเรียบร้อยแล้ว');
-            } else {
                 let err = await res.json().catch(() => ({}));
                 alert('บันทึกข้อมูลไม่สำเร็จ' + (err.error ? ': ' + err.error : ' กรุณาลองใหม่อีกครั้ง'));
-            }
+                return false;   // เซิร์ฟเวอร์ปฏิเสธ → แก้ข้อมูลแล้วกดใหม่ได้ทันที
+            });
         }
 
         async function deleteProduct(id) {
@@ -1357,22 +1441,26 @@
 
         async function saveCategory(e) {
             e.preventDefault();
-            let name = document.getElementById('newCategoryName').value;
-            if(!name) return;
-            
-            let res = await adminFetch('/api/admin/categories', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name})
-            });
+            const btn = e.submitter || document.querySelector('#categoryModal button[type="submit"]');
+            return runWithCooldown('saveCategory', btn, 'กำลังบันทึก', async () => {
+                let name = document.getElementById('newCategoryName').value.trim();
+                if(!name) return false;
 
-            if(res.ok) {
-                closeCategoryModal();
-                loadCategories();
-                showSuccessModal('เพิ่มหมวดหมู่สำเร็จ');
-            } else {
+                let res = await adminFetch('/api/admin/categories', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: name})
+                });
+
+                if(res.ok) {
+                    closeCategoryModal();
+                    loadCategories();
+                    showSuccessModal('เพิ่มหมวดหมู่สำเร็จ');
+                    return true;
+                }
                 alert('ไม่สามารถเพิ่มหมวดหมู่ได้ กรุณาลองใหม่อีกครั้ง');
-            }
+                return false;
+            });
         }
 
         async function deleteCategory(id) {
@@ -1420,22 +1508,26 @@
 
         async function saveDeliveryTime(e) {
             e.preventDefault();
-            let timeVal = document.getElementById('newDeliveryTimeInput').value;
-            if(!timeVal) return;
+            const btn = e.submitter || document.querySelector('#deliveryModal button[type="submit"]');
+            return runWithCooldown('saveDelivery', btn, 'กำลังบันทึก', async () => {
+                let timeVal = document.getElementById('newDeliveryTimeInput').value;
+                if(!timeVal) return false;
 
-            let res = await adminFetch('/api/admin/delivery-times', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({time: timeVal, status: 'active'})
-            });
+                let res = await adminFetch('/api/admin/delivery-times', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({time: timeVal, status: 'active'})
+                });
 
-            if(res.ok) {
-                closeDeliveryModal();
-                loadDeliveryTimes();
-                showSuccessModal('เพิ่มรอบเวลาจัดส่งสำเร็จ');
-            } else {
+                if(res.ok) {
+                    closeDeliveryModal();
+                    loadDeliveryTimes();
+                    showSuccessModal('เพิ่มรอบเวลาจัดส่งสำเร็จ');
+                    return true;
+                }
                 alert('ไม่สามารถเพิ่มเวลาได้ กรุณาลองใหม่อีกครั้ง');
-            }
+                return false;
+            });
         }
 
         async function toggleDeliveryStatus(id, isActive) {

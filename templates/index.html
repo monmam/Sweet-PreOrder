@@ -377,7 +377,7 @@
                         <div id="timeSlotsContainer" class="time-slots-grid"></div>
                     </div>
 
-                    <button class="btn-checkout" onclick="submitOrder()">
+                    <button class="btn-checkout" onclick="submitOrder(this)">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                         ยืนยันออเดอร์ & ไปชำระเงิน
                     </button>
@@ -520,8 +520,77 @@
         let currentTotal = 0;        // ยอดในตะกร้า (คำนวณฝั่ง client เพื่อแสดงผลเท่านั้น)
         let selectedProductForOptions = null;
         let editingCartIndex = -1;
-        let isSubmittingSlip = false;
-        let isSubmittingOrder = false;
+        // ============================================================
+        // COOLDOWN: กันกดรัวๆ ในปุ่ม "แอคชั่นใหญ่" (บันทึก / สร้างออเดอร์ / ส่งสลิป)
+        // กดแล้วปุ่มล็อกทันที + นับถอยหลัง 20 วินาที (เปลี่ยนตัวเลขได้ที่ COOLDOWN_SECONDS)
+        // จำเวลาไว้ใน localStorage ด้วย → รีเฟรชหน้าแล้วกดใหม่ก็ยังต้องรอครบเวลา
+        // ============================================================
+        const COOLDOWN_SECONDS = 20;
+        const _cdRunning = {};   // key -> กำลังส่งคำขออยู่
+        const _cdMem = {};       // key -> เวลาสิ้นสุดคูลดาวน์ (สำรองกรณี localStorage ใช้ไม่ได้)
+
+        function cdGetEnd(key) {
+            let v = _cdMem[key] || 0;
+            try { v = Math.max(v, Number(localStorage.getItem('cd:' + key)) || 0); } catch (e) {}
+            return v;
+        }
+        function cdSetEnd(key, t) { _cdMem[key] = t; try { localStorage.setItem('cd:' + key, String(t)); } catch (e) {} }
+        function cdClear(key) { delete _cdMem[key]; try { localStorage.removeItem('cd:' + key); } catch (e) {} }
+
+        function cdRelease(btn) {
+            clearInterval(btn._cdTimer);
+            btn._cdTimer = null;
+            if (btn._cdOrig !== undefined) { btn.innerHTML = btn._cdOrig; btn._cdOrig = undefined; }
+            btn.disabled = false;
+            btn.style.opacity = '';
+            btn.style.cursor = '';
+        }
+
+        function cdShow(btn, key, label, endAt) {
+            clearInterval(btn._cdTimer);
+            if (btn._cdOrig === undefined) btn._cdOrig = btn.innerHTML;
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+            btn.style.cursor = 'not-allowed';
+            const tick = () => {
+                const left = Math.ceil((endAt - Date.now()) / 1000);
+                if (left > 0) btn.innerHTML = `⏳ ${label} (${left}s)`;
+                else if (_cdRunning[key]) btn.innerHTML = `⏳ ${label}...`;   // คำขอยังไม่จบ → ยังไม่ปลดล็อก
+                else cdRelease(btn);
+            };
+            btn._cdTimer = setInterval(tick, 250);
+            tick();
+        }
+
+        /**
+         * ครอบ action ใหญ่ๆ ด้วยคูลดาวน์
+         *  - action() ต้องคืน true ถ้า "ส่งคำขอไปจริงแล้ว" (คูลดาวน์เต็มเวลา)
+         *    คืน false ถ้าไม่ได้ส่ง (เช่น กรอกไม่ครบ / เซิร์ฟเวอร์ปฏิเสธ) → ปลดล็อกทันที ไม่ต้องรอ
+         */
+        async function runWithCooldown(key, btn, label, action, seconds = COOLDOWN_SECONDS) {
+            const now = Date.now();
+            const busyUntil = cdGetEnd(key);
+            if (busyUntil > now) {                 // ยังอยู่ในช่วงคูลดาวน์ → ไม่ทำงาน แค่โชว์นับถอยหลัง
+                if (btn) cdShow(btn, key, label, busyUntil);
+                return false;
+            }
+            if (_cdRunning[key]) return false;
+
+            const endAt = now + seconds * 1000;
+            cdSetEnd(key, endAt);
+            _cdRunning[key] = true;
+            if (btn) cdShow(btn, key, label, endAt);
+
+            let started = false;
+            try { started = await action(); }
+            catch (e) { console.error(e); started = false; }
+            finally { _cdRunning[key] = false; }
+
+            if (!started) { cdClear(key); if (btn) cdRelease(btn); }
+            return started;
+        }
+        // ---- end cooldown helpers ----
+
 
         const PLACEHOLDER_IMG = 'data:image/svg+xml,' + encodeURIComponent(
             "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='160'><rect width='100%' height='100%' fill='#f1f5f9'/><text x='50%' y='52%' dominant-baseline='middle' text-anchor='middle' font-size='44'>🍽️</text></svg>"
@@ -893,53 +962,53 @@
             document.getElementById('btnProceedCheckout').classList.add('hidden');
         }
 
-        async function submitOrder() {
-            if (isSubmittingOrder) return;
+        async function submitOrder(btn) {
+            // ปุ่มนี้สร้างออเดอร์ใหม่ทุกครั้งที่กด จึงใส่คูลดาวน์กันกดรัวจนเกิดออเดอร์ซ้ำ
+            return runWithCooldown('order', btn, 'กำลังสร้างออเดอร์', async () => {
+                let name = document.getElementById('custName').value.trim();
+                let phone = document.getElementById('custPhone').value.trim();
+                let date = document.getElementById('custDate').value;
+                let time = document.getElementById('custTime').value;
 
-            let name = document.getElementById('custName').value.trim();
-            let phone = document.getElementById('custPhone').value.trim();
-            let date = document.getElementById('custDate').value;
-            let time = document.getElementById('custTime').value;
+                if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return false; }
+                if(cart.length === 0) { showAlert('ตะกร้ายังว่างอยู่ กรุณาเลือกเมนูก่อนนะค้า'); return false; }
 
-            if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return; }
-            if(cart.length === 0) { showAlert('ตะกร้ายังว่างอยู่ กรุณาเลือกเมนูก่อนนะค้า'); return; }
+                // ส่งเฉพาะ id, qty และ 'ชื่อ' ตัวเลือกที่เลือก — server คิดราคาทั้งหมดเองจากตาราง products
+                let orderData = {
+                    customer_name: name,
+                    phone: phone,
+                    delivery_date: date,
+                    delivery_time: time,
+                    items: cart.map(i => ({
+                        id: i.id,
+                        qty: i.qty,
+                        selected_options: i.selectedOptionsArray || [],
+                        options: i.options,
+                        customNote: i.customNote || ''
+                    }))
+                };
 
-            // ส่งเฉพาะ id, qty และ 'ชื่อ' ตัวเลือกที่เลือก — server คิดราคาทั้งหมดเองจากตาราง products
-            let orderData = {
-                customer_name: name,
-                phone: phone,
-                delivery_date: date,
-                delivery_time: time,
-                items: cart.map(i => ({
-                    id: i.id,
-                    qty: i.qty,
-                    selected_options: i.selectedOptionsArray || [],
-                    options: i.options,
-                    customNote: i.customNote || ''
-                }))
-            };
-
-            isSubmittingOrder = true;
-            try {
-                let res = await fetch('/api/order', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(orderData)
-                });
-                let data = await res.json().catch(() => ({}));
-                if(res.ok) {
-                    currentOrderId = data.order_id;
-                    currentOrderTotal = data.total;
-                    await openPaymentModal(data.order_id, data.total);
-                } else {
+                try {
+                    let res = await fetch('/api/order', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(orderData)
+                    });
+                    let data = await res.json().catch(() => ({}));
+                    if(res.ok) {
+                        currentOrderId = data.order_id;
+                        currentOrderTotal = data.total;
+                        await openPaymentModal(data.order_id, data.total);
+                        return true;   // สร้างออเดอร์แล้ว → คูลดาวน์เต็ม 20 วินาที
+                    }
                     showAlert(data.error || data.message || 'เกิดข้อผิดพลาดในการสร้างออเดอร์');
+                    return false;      // เซิร์ฟเวอร์ปฏิเสธ (ไม่ได้สร้างออเดอร์) → แก้แล้วกดใหม่ได้เลย
+                } catch(e) {
+                    console.error(e);
+                    showAlert('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่อีกครั้ง');
+                    return false;
                 }
-            } catch(e) {
-                console.error(e);
-                showAlert('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่อีกครั้ง');
-            } finally {
-                isSubmittingOrder = false;
-            }
+            });
         }
 
         async function openPaymentModal(orderId, total) {
@@ -964,77 +1033,45 @@
         }
 
         async function uploadSlip() {
-            if (isSubmittingSlip) return;
+            // การตรวจสลิปเรียก API ภายนอกและเป็นขั้นตอนโอนเงิน → คูลดาวน์ 20 วินาทีเสมอ แม้สลิปไม่ผ่าน
+            const btn = document.getElementById('btnSubmitSlip');
+            return runWithCooldown('slip', btn, 'กำลังตรวจสอบ', async () => {
+                let fileInput = document.getElementById('slipFile');
+                if (!currentOrderId) { showAlert('ไม่พบออเดอร์ กรุณากดยืนยันออเดอร์ใหม่อีกครั้ง'); return false; }
+                if (fileInput.files.length === 0) { showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า'); return false; }
 
-            let fileInput = document.getElementById('slipFile');
-            if (!currentOrderId) { showAlert('ไม่พบออเดอร์ กรุณากดยืนยันออเดอร์ใหม่อีกครั้ง'); return; }
-            if(fileInput.files.length === 0) {
-                showAlert('กรุณาแนบสลิปโอนเงินก่อนยืนยันนะค้า');
-                return;
-            }
+                let formData = new FormData();
+                formData.append('order_id', currentOrderId);
+                formData.append('slip', fileInput.files[0]);
 
-            isSubmittingSlip = true;
-            let btn = document.getElementById('btnSubmitSlip');
-            btn.disabled = true;
-            btn.style.opacity = '0.6';
-            btn.style.cursor = 'not-allowed';
+                try {
+                    let res = await fetch('/api/slip', { method: 'POST', body: formData });
+                    let data = await res.json().catch(() => ({}));
 
-            // ล็อกปุ่ม 20 วินาทีกันกดซ้ำ (การตรวจสลิปฝั่ง server ใช้เวลาได้ถึง ~15 วินาที)
-            let countdown = 20;
-            let originalText = btn.innerHTML;
+                    if (res.ok && data.success) {
+                        document.getElementById('paymentModal').style.display = 'none';
+                        document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
+                        document.getElementById('successModal').style.display = 'flex';
+                        cart = [];
+                        updateCartCount();
+                        return true;
+                    }
 
-            let timer = setInterval(() => {
-                countdown--;
-                if (countdown > 0) {
-                    btn.innerHTML = `⏳ กำลังตรวจสอบ (${countdown}s)...`;
-                } else {
-                    clearInterval(timer);
+                    // app.py ลบออเดอร์ทิ้งทันทีเมื่อสลิปไม่ผ่าน (400/404) จึงใช้ order_id เดิมส่งซ้ำไม่ได้
+                    // → ปิดหน้าจ่ายเงิน แล้วให้ลูกค้ากด "ยืนยันออเดอร์" ใหม่ (ตะกร้ายังอยู่ครบ)
+                    if (res.status === 400 || res.status === 404) {
+                        document.getElementById('paymentModal').style.display = 'none';
+                        currentOrderId = '';
+                        fileInput.value = '';
+                        showAlert((data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ') + '\n\nออเดอร์นี้ถูกยกเลิกแล้ว กรุณากด "ยืนยันออเดอร์" อีกครั้งเพื่อสร้างรายการใหม่');
+                    } else {
+                        showAlert(data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ');
+                    }
+                } catch (e) {
+                    showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป');
                 }
-            }, 1000);
-
-            const unlock = () => {
-                clearInterval(timer);
-                isSubmittingSlip = false;
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.style.cursor = 'pointer';
-                btn.innerHTML = originalText;
-            };
-
-            let formData = new FormData();
-            formData.append('order_id', currentOrderId);
-            formData.append('slip', fileInput.files[0]);
-
-            try {
-                let res = await fetch('/api/slip', { method: 'POST', body: formData });
-                let data = await res.json().catch(() => ({}));
-
-                if(res.ok && data.success) {
-                    clearInterval(timer);
-                    document.getElementById('paymentModal').style.display = 'none';
-                    document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
-                    document.getElementById('successModal').style.display = 'flex';
-                    cart = [];
-                    updateCartCount();
-                    return;
-                }
-
-                // app.py ลบออเดอร์ทิ้งทันทีเมื่อสลิปไม่ผ่าน (400/404) จึงใช้ order_id เดิมส่งซ้ำไม่ได้
-                // → ปิดหน้าจ่ายเงิน แล้วให้ลูกค้ากด "ยืนยันออเดอร์" ใหม่ (ตะกร้ายังอยู่ครบ)
-                if (res.status === 400 || res.status === 404) {
-                    document.getElementById('paymentModal').style.display = 'none';
-                    currentOrderId = '';
-                    fileInput.value = '';
-                    showAlert((data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ') + '\n\nออเดอร์นี้ถูกยกเลิกแล้ว กรุณากด "ยืนยันออเดอร์" อีกครั้งเพื่อสร้างรายการใหม่');
-                } else {
-                    showAlert(data.message || data.error || 'ตรวจสอบสลิปไม่สำเร็จ');
-                }
-            } catch(e) {
-                showAlert('เกิดข้อผิดพลาดในการอัปโหลดสลิป');
-            }
-
-            // ปลดล็อกปุ่มเมื่อครบเวลา
-            setTimeout(unlock, Math.max(countdown, 0) * 1000);
+                return true;   // ส่งสลิปไปตรวจแล้ว → รอครบ 20 วินาทีก่อนส่งใหม่
+            });
         }
 
         async function checkOrderStatus() {
