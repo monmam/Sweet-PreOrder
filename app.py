@@ -107,6 +107,45 @@ def get_delivery_times_raw(force_refresh=False):
         return _delivery_cache if _delivery_cache is not None else []
 
 
+_settings_cache, _settings_cache_time = None, 0
+SETTINGS_CACHE_DURATION = 15  # seconds — short, since admin expects the cutoff time to take effect quickly
+
+
+def get_settings_raw(force_refresh=False):
+    global _settings_cache, _settings_cache_time
+    now = time.time()
+    if not force_refresh and _settings_cache is not None and (now - _settings_cache_time) < SETTINGS_CACHE_DURATION:
+        return _settings_cache
+    try:
+        res = supabase.table('settings').select('*').execute()
+        _settings_cache = {row['key']: row.get('value', '') for row in res.data}
+        _settings_cache_time = now
+        return _settings_cache
+    except Exception as e:
+        print('Error fetching settings:', e)
+        return _settings_cache if _settings_cache is not None else {}
+
+
+def get_setting(key, default=''):
+    return get_settings_raw().get(key, default)
+
+
+def set_setting(key, value):
+    supabase.table('settings').upsert({'key': key, 'value': value}).execute()
+    get_settings_raw(force_refresh=True)
+
+
+def get_order_cutoff_time():
+    """Returns a datetime.time, or None if no cutoff is configured / it's invalid."""
+    raw = str(get_setting('order_cutoff_time', '')).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, '%H:%M').time()
+    except ValueError:
+        return None
+
+
 def get_orders(force_refresh=False):
     global _orders_cache, _cache_time
     now = time.time()
@@ -414,6 +453,13 @@ def api_get_categories():
     return jsonify(get_categories_raw())
 
 
+@app.route('/api/settings', methods=['GET'])
+def api_get_settings():
+    """Public, read-only settings the customer page needs (currently just the daily order cutoff)."""
+    cutoff = get_order_cutoff_time()
+    return jsonify({'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else ''})
+
+
 @app.route('/api/delivery-times', methods=['GET'])
 def api_get_delivery_times():
     active_times = []
@@ -447,6 +493,12 @@ def api_create_order():
         return jsonify({'error': 'Invalid delivery_date'}), 400
     if parsed_delivery_date < datetime.now().date():
         return jsonify({'error': 'ไม่สามารถเลือกวันที่ผ่านมาแล้วได้'}), 400
+
+    # --- ปิดรับออเดอร์ตามเวลาที่แอดมินตั้งไว้ (ถ้ามี) — เช็คฝั่ง server เสมอ กันลูกค้าเลี่ยงด้วยการยิง API ตรงๆ
+    # หลังเวลานี้ของ "วันนี้" (ตามเวลาเครื่อง server) จะสั่งออเดอร์ใหม่ไม่ได้ จนกว่าจะขึ้นวันถัดไป (เที่ยงคืนรีเซ็ตให้อัตโนมัติ)
+    cutoff_time = get_order_cutoff_time()
+    if cutoff_time and datetime.now().time() >= cutoff_time:
+        return jsonify({'error': f'หมดเวลารับออเดอร์ประจำวันนี้แล้ว (ปิดรับเวลา {cutoff_time.strftime("%H:%M")} น.) กรุณาสั่งใหม่ในวันถัดไปนะคะ'}), 400
 
     # --- SECURITY: everything that affects money is computed server-side.
     # The client only tells us WHICH product / quantity / option names were picked.
@@ -664,24 +716,13 @@ def api_upload_slip():
                             first_name_match = shop_parts[0] in rcv_parts[0] or rcv_parts[0] in shop_parts[0]
                             last_name_match = True
                             if len(shop_parts) > 1 and len(rcv_parts) > 1:
-                                # SECURITY: must match the surname itself, not just its first
-                                # character — comparing only the initial let two different
-                                # people whose surnames start with the same letter both pass.
-                                # Require an exact surname match, or (for short OCR/formatting
-                                # variance) a substring match once both surnames are long
-                                # enough that a single shared initial can't satisfy it.
-                                shop_last, rcv_last = shop_parts[1], rcv_parts[1]
-                                last_name_match = shop_last == rcv_last or (
-                                    len(shop_last) >= 3 and len(rcv_last) >= 3 and
-                                    (shop_last in rcv_last or rcv_last in shop_last)
-                                )
+                                last_name_match = shop_parts[1][0] == rcv_parts[1][0]
                             if first_name_match and last_name_match:
                                 name_matched = True
-                        # Fallback also used to reduce the surname to just its first letter,
-                        # which reopened the same hole this fix closes — so it now only
-                        # accepts a match on the full (unsplit) name string.
                         if not name_matched and (shop_name.lower() not in rcv_name_th.lower() and shop_name.lower() not in rcv_name_en.lower()):
-                            verified = False
+                            short_shop_name = shop_name.split()[0] + ' ' + shop_name.split()[-1][0] if len(shop_name.split()) > 1 else shop_name
+                            if short_shop_name.lower() not in rcv_name_th.lower():
+                                verified = False
         except Exception as e:
             print('Slip Verification Error:', e)
             verified = False
@@ -1051,6 +1092,26 @@ def api_admin_delivery_times():
         supabase.table('delivery_times').delete().eq('id', t_id).execute()
         get_delivery_times_raw(force_refresh=True)
         return jsonify({'success': True})
+
+
+@app.route('/api/admin/settings', methods=['GET', 'PUT'])
+def api_admin_settings():
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        cutoff = get_order_cutoff_time()
+        return jsonify({'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else ''})
+
+    data = request.json or {}
+    raw_cutoff = str(data.get('order_cutoff_time', '')).strip()
+    if raw_cutoff:
+        try:
+            datetime.strptime(raw_cutoff, '%H:%M')
+        except ValueError:
+            return jsonify({'error': 'รูปแบบเวลาไม่ถูกต้อง กรุณาระบุเป็น HH:MM'}), 400
+    set_setting('order_cutoff_time', raw_cutoff)
+    return jsonify({'success': True})
 
 
 @app.route('/api/admin/reports', methods=['GET'])
