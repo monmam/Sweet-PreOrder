@@ -597,72 +597,90 @@ def api_upload_slip():
             )
             if resp.status_code == 200 and is_success:
                 data_field = res_json.get('data', res_json)
-                trans_ref = data_field.get('transRef') or res_json.get('transRef')
-                slip_date = data_field.get('date', '')  # ISO 8601 date from the slip itself, per Thunder v1 spec
                 api_status = res_json.get('status')
-                raw_amount = data_field.get('amount', 0)
-                if isinstance(raw_amount, dict):
-                    raw_amount = raw_amount.get('amount', 0)
-                try:
-                    paid_amount = float(raw_amount) if raw_amount else 0.0
-                except (ValueError, TypeError):
-                    paid_amount = 0.0
+                if not data_field:
+                    # Thunder returned status:200 (call succeeded) but data is null/empty —
+                    # this is their "สลิปไม่มีข้อมูล" case: image opened fine, but no
+                    # readable slip/QR data inside it (not a real slip, no QR, QR unreadable).
+                    verified = False
+                else:
+                    trans_ref = data_field.get('transRef') or res_json.get('transRef')
+                    slip_date = data_field.get('date', '')  # ISO 8601 date from the slip itself, per Thunder v1 spec
+                    raw_amount = data_field.get('amount', 0)
+                    if isinstance(raw_amount, dict):
+                        raw_amount = raw_amount.get('amount', 0)
+                    try:
+                        paid_amount = float(raw_amount) if raw_amount else 0.0
+                    except (ValueError, TypeError):
+                        paid_amount = 0.0
 
-                receiver_info = data_field.get('receiver', {})
-                receiver_account = receiver_info.get('account', {})
-                rcv_name_th = receiver_account.get('name', {}).get('th', '')
-                rcv_name_en = receiver_account.get('name', {}).get('en', '')
-                rcv_proxy = receiver_account.get('proxy', {}).get('account', '')
-                rcv_bank_acc = receiver_account.get('bank', {}).get('account', '')
-                rcv_target_num = rcv_proxy if rcv_proxy else rcv_bank_acc
+                    receiver_info = data_field.get('receiver', {})
+                    receiver_account = receiver_info.get('account', {})
+                    rcv_name_th = receiver_account.get('name', {}).get('th', '')
+                    rcv_name_en = receiver_account.get('name', {}).get('en', '')
+                    rcv_proxy = receiver_account.get('proxy', {}).get('account', '')
+                    rcv_bank_acc = receiver_account.get('bank', {}).get('account', '')
+                    rcv_target_num = rcv_proxy if rcv_proxy else rcv_bank_acc
 
-                # Sender (payer) info — same shape as receiver, per Thunder v1 spec.
-                # Previously never read at all, so it never reached the orders table.
-                sender_info = data_field.get('sender', {})
-                sender_account = sender_info.get('account', {})
-                sender_name_th = sender_account.get('name', {}).get('th', '')
-                sender_name_en = sender_account.get('name', {}).get('en', '')
-                sender_bank_short = sender_info.get('bank', {}).get('short', '')
-                sender_proxy = sender_account.get('proxy', {}).get('account', '')
-                sender_bank_acc = sender_account.get('bank', {}).get('account', '')
-                sender_num = sender_proxy if sender_proxy else sender_bank_acc
+                    # Sender (payer) info — same shape as receiver, per Thunder v1 spec.
+                    # Previously never read at all, so it never reached the orders table.
+                    sender_info = data_field.get('sender', {})
+                    sender_account = sender_info.get('account', {})
+                    sender_name_th = sender_account.get('name', {}).get('th', '')
+                    sender_name_en = sender_account.get('name', {}).get('en', '')
+                    sender_bank_short = sender_info.get('bank', {}).get('short', '')
+                    sender_proxy = sender_account.get('proxy', {}).get('account', '')
+                    sender_bank_acc = sender_account.get('bank', {}).get('account', '')
+                    sender_num = sender_proxy if sender_proxy else sender_bank_acc
 
-                shop_number = os.getenv('PROMPTPAY_NUMBER', '').strip()
-                shop_name = os.getenv('SHOP_ACCOUNT_NAME', '').strip()
 
-                verified = True
-                if shop_number:
-                    clean_shop = shop_number.replace('-', '').strip()
-                    clean_rcv = str(rcv_target_num).replace('-', '').strip()
-                    shop_digits = ''.join(filter(str.isdigit, clean_shop))
-                    rcv_digits = ''.join(filter(str.isdigit, clean_rcv))
-                    if shop_digits and rcv_digits:
-                        common_digits = sum(1 for a, b in zip(shop_digits[-4:], rcv_digits[-4:]) if a == b)
-                        if len(shop_digits) >= 4 and common_digits == 0 and shop_digits not in rcv_digits and rcv_digits not in shop_digits:
-                            verified = False
+                    shop_number = os.getenv('PROMPTPAY_NUMBER', '').strip()
+                    shop_name = os.getenv('SHOP_ACCOUNT_NAME', '').strip()
 
-                if shop_name and verified:
-                    prefixes = ['นาย', 'นาง', 'น.ส.', 'นางสาว', 'mr.', 'ms.', 'mrs.']
-                    shop_lower = shop_name.lower()
-                    rcv_th_lower = rcv_name_th.lower()
-                    rcv_en_lower = rcv_name_en.lower()
-                    for p in prefixes:
-                        shop_lower = shop_lower.replace(p, '')
-                        rcv_th_lower = rcv_th_lower.replace(p, '')
-                        rcv_en_lower = rcv_en_lower.replace(p, '')
-                    shop_parts = shop_lower.split()
-                    rcv_parts = rcv_th_lower.split()
-                    name_matched = False
-                    if shop_parts and rcv_parts:
-                        first_name_match = shop_parts[0] in rcv_parts[0] or rcv_parts[0] in shop_parts[0]
-                        last_name_match = True
-                        if len(shop_parts) > 1 and len(rcv_parts) > 1:
-                            last_name_match = shop_parts[1][0] == rcv_parts[1][0]
-                        if first_name_match and last_name_match:
-                            name_matched = True
-                    if not name_matched and (shop_name.lower() not in rcv_name_th.lower() and shop_name.lower() not in rcv_name_en.lower()):
-                        short_shop_name = shop_name.split()[0] + ' ' + shop_name.split()[-1][0] if len(shop_name.split()) > 1 else shop_name
-                        if short_shop_name.lower() not in rcv_name_th.lower():
+                    verified = True
+                    if shop_number:
+                        clean_shop = shop_number.replace('-', '').strip()
+                        clean_rcv = str(rcv_target_num).replace('-', '').strip()
+                        shop_digits = ''.join(filter(str.isdigit, clean_shop))
+                        rcv_digits = ''.join(filter(str.isdigit, clean_rcv))
+                        if shop_digits and rcv_digits:
+                            common_digits = sum(1 for a, b in zip(shop_digits[-4:], rcv_digits[-4:]) if a == b)
+                            if len(shop_digits) >= 4 and common_digits == 0 and shop_digits not in rcv_digits and rcv_digits not in shop_digits:
+                                verified = False
+
+                    if shop_name and verified:
+                        prefixes = ['นาย', 'นาง', 'น.ส.', 'นางสาว', 'mr.', 'ms.', 'mrs.']
+                        shop_lower = shop_name.lower()
+                        rcv_th_lower = rcv_name_th.lower()
+                        rcv_en_lower = rcv_name_en.lower()
+                        for p in prefixes:
+                            shop_lower = shop_lower.replace(p, '')
+                            rcv_th_lower = rcv_th_lower.replace(p, '')
+                            rcv_en_lower = rcv_en_lower.replace(p, '')
+                        shop_parts = shop_lower.split()
+                        rcv_parts = rcv_th_lower.split()
+                        name_matched = False
+                        if shop_parts and rcv_parts:
+                            first_name_match = shop_parts[0] in rcv_parts[0] or rcv_parts[0] in shop_parts[0]
+                            last_name_match = True
+                            if len(shop_parts) > 1 and len(rcv_parts) > 1:
+                                # SECURITY: must match the surname itself, not just its first
+                                # character — comparing only the initial let two different
+                                # people whose surnames start with the same letter both pass.
+                                # Require an exact surname match, or (for short OCR/formatting
+                                # variance) a substring match once both surnames are long
+                                # enough that a single shared initial can't satisfy it.
+                                shop_last, rcv_last = shop_parts[1], rcv_parts[1]
+                                last_name_match = shop_last == rcv_last or (
+                                    len(shop_last) >= 3 and len(rcv_last) >= 3 and
+                                    (shop_last in rcv_last or rcv_last in shop_last)
+                                )
+                            if first_name_match and last_name_match:
+                                name_matched = True
+                        # Fallback also used to reduce the surname to just its first letter,
+                        # which reopened the same hole this fix closes — so it now only
+                        # accepts a match on the full (unsplit) name string.
+                        if not name_matched and (shop_name.lower() not in rcv_name_th.lower() and shop_name.lower() not in rcv_name_en.lower()):
                             verified = False
         except Exception as e:
             print('Slip Verification Error:', e)
@@ -730,6 +748,7 @@ def api_order_status(order_id):
         'delivery_date': target.get('delivery_date'),
         'delivery_time': target.get('delivery_time'),
         'total': target.get('total'),
+        'completed_at': target.get('completed_at'),
     })
 
 
@@ -983,7 +1002,11 @@ def api_admin_orders():
         new_status = data.get('order_status')
         if not order_id:
             return jsonify({'error': 'Missing order_id'}), 400
-        res = supabase.table('orders').update({'order_status': new_status}).eq('order_id', order_id).execute()
+        update_fields = {'order_status': new_status}
+        # ใช้ completed_at คำนวณฝั่งลูกค้าว่า "เสร็จสิ้น" มานานแค่ไหนแล้ว เพื่อซ่อนออเดอร์เก่าออกจากลิสต์อัตโนมัติ
+        # เคลียร์ทิ้งเป็น None ถ้าสถานะถูกเปลี่ยนออกจาก completed (เผื่อกดพลาดแล้วกลับสถานะ)
+        update_fields['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S') if new_status == 'completed' else None
+        res = supabase.table('orders').update(update_fields).eq('order_id', order_id).execute()
         if res.data:
             get_orders(force_refresh=True)
             return jsonify({'success': True})
