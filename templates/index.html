@@ -324,6 +324,8 @@
                 </div>
             </div>
 
+            <div id="cutoffInfoBanner" class="hidden" style="border-radius: 12px; padding: 10px 16px; font-size: 0.85rem; font-weight: 600; margin-bottom: 16px; text-align: center;"></div>
+
             <div class="category-chips" id="categoryChips">
                 <div class="chip active" onclick="filterCategory('ทั้งหมด', this)">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
@@ -731,9 +733,28 @@
 
         function syncCutoffUI() {
             const notice = document.getElementById('cutoffNotice');
+            const infoBanner = document.getElementById('cutoffInfoBanner');
             const checkoutBtn = document.querySelector('#checkoutFormSection .btn-checkout');
             const proceedBtn = document.getElementById('btnProceedCheckout');
             const past = isPastOrderCutoff();
+
+            // แบนเนอร์บนสุด: โชว์เวลาปิดรับให้เห็นตลอด ไม่ต้องรอให้ลูกค้ากดสั่งก่อนถึงจะรู้
+            if (orderCutoffTime) {
+                infoBanner.classList.remove('hidden');
+                if (past) {
+                    infoBanner.innerText = `🔴 ปิดรับออเดอร์วันนี้แล้ว (ปิดรับเวลา ${orderCutoffTime} น.) — กลับมาสั่งใหม่พรุ่งนี้นะคะ`;
+                    infoBanner.style.background = '#FFF0F3';
+                    infoBanner.style.border = '1.5px solid var(--primary)';
+                    infoBanner.style.color = 'var(--primary)';
+                } else {
+                    infoBanner.innerText = `🟢 วันนี้เปิดรับออเดอร์ถึงเวลา ${orderCutoffTime} น.`;
+                    infoBanner.style.background = '#F0FFF4';
+                    infoBanner.style.border = '1.5px solid #38A169';
+                    infoBanner.style.color = '#2F855A';
+                }
+            } else {
+                infoBanner.classList.add('hidden');
+            }
 
             if (past) {
                 notice.innerText = `หมดเวลารับออเดอร์ประจำวันนี้แล้ว (ปิดรับเวลา ${orderCutoffTime} น.) กรุณากลับมาสั่งใหม่พรุ่งนี้นะคะ`;
