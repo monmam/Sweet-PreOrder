@@ -402,9 +402,15 @@
                 <div id="myOrdersList" style="display: flex; flex-direction: column; gap: 10px;"></div>
             </div>
 
-            <div class="cart-section">
+            <div id="manualSearchToggleWrap" class="hidden" style="text-align: center; margin-bottom: 16px;">
+                <button type="button" onclick="toggleManualSearch()" style="background: none; border: none; color: var(--text-muted); font-size: 0.82rem; text-decoration: underline; cursor: pointer;">
+                    ค้นหาออเดอร์อื่นด้วยเลขที่ออเดอร์
+                </button>
+            </div>
+
+            <div id="manualSearchSection" class="cart-section hidden">
                 <div class="form-group">
-                    <label>หรือค้นหาด้วยเลขออเดอร์ (เช่น ORD-1A2B3C4D5E)</label>
+                    <label>ค้นหาด้วยเลขออเดอร์ (เช่น ORD-1A2B3C4D5E)</label>
                     <input type="text" id="searchOrderId" placeholder="ORD-XXXXXXXXXX">
                 </div>
                 <button class="btn-checkout" onclick="checkOrderStatus()">
@@ -674,6 +680,7 @@
             loadCategories();
             loadProducts();
             loadDeliveryTimes();
+            startProductsAutoRefresh();
 
             // กู้คืนตะกร้าจากรอบก่อน เผื่อหน้าจอถูกรีเฟรช/ปิดไปกลางคัน
             loadCartFromStorage();
@@ -785,8 +792,40 @@
                 let res = await fetch('/api/products');
                 let data = await res.json();
                 allProducts = Array.isArray(data) ? data : [];
-                renderProducts(allProducts);
+                applyCurrentFilterAndRender();
             } catch(e) { console.error(e); }
+        }
+
+        function applyCurrentFilterAndRender() {
+            if (currentCategory && currentCategory !== 'ทั้งหมด') {
+                renderProducts(allProducts.filter(p => p.category === currentCategory));
+            } else {
+                renderProducts(allProducts);
+            }
+        }
+
+        // เช็คเมนูใหม่/เปลี่ยนแปลงจากแอดมินเป็นระยะ แล้วอัปเดตหน้าลูกค้าเงียบๆ โดยไม่รีเฟรชหน้า
+        // (ไม่กระทบตะกร้าหรือ modal ที่ลูกค้ากำลังเปิดอยู่)
+        let productsPollTimer = null;
+        function startProductsAutoRefresh(intervalMs = 15000) {
+            if (productsPollTimer) clearInterval(productsPollTimer);
+            productsPollTimer = setInterval(async () => {
+                try {
+                    let res = await fetch('/api/products');
+                    if (!res.ok) return;
+                    let data = await res.json();
+                    data = Array.isArray(data) ? data : [];
+                    // เทียบข้อมูลก่อน ถ้าไม่มีอะไรเปลี่ยนก็ไม่ต้อง re-render ให้จอกระพริบ
+                    if (JSON.stringify(data) !== JSON.stringify(allProducts)) {
+                        allProducts = data;
+                        applyCurrentFilterAndRender();
+                        // อัปเดตหมวดหมู่ด้วย เผื่อแอดมินเพิ่มหมวดใหม่พร้อมเมนู
+                        loadCategories();
+                    }
+                } catch (e) {
+                    // เน็ตหลุดชั่วคราว ปล่อยผ่าน รอบหน้าลองใหม่
+                }
+            }, intervalMs);
         }
 
         function filterCategory(category, element) {
@@ -966,7 +1005,6 @@
             }
 
             let customNote = document.getElementById('optCustomNote').value.trim();
-            if (customNote) selectedOptionsText.push(`โน้ต: ${customNote}`);
 
             // ราคาฐานใช้ sale_price ถ้ามี (ให้ตรงกับที่ server คิดเงินจริง)
             let basePrice = unitPrice(selectedProductForOptions);
@@ -1034,7 +1072,8 @@
                     <div class="cart-item">
                         <div style="flex: 1; min-width: 180px;">
                             <div style="font-weight: 600; color: var(--text-main); font-size: 0.95rem;">${esc(item.name)}</div>
-                            <div style="font-size: 0.75rem; color: var(--primary); font-weight: 500; margin-top: 2px;">(${esc(item.options)})</div>
+                            ${item.options ? `<div style="font-size: 0.75rem; color: var(--primary); font-weight: 500; margin-top: 2px;">(${esc(item.options)})</div>` : ''}
+                            ${item.customNote ? `<div style="font-size: 0.75rem; color: #ef4444; font-weight: 500; margin-top: 2px;">โน้ต: ${esc(item.customNote)}</div>` : ''}
                             <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">฿${item.price} × ${item.qty}</div>
                         </div>
                         <div style="display: flex; gap: 6px; align-items: center; margin-left: auto;">
@@ -1186,6 +1225,21 @@
             });
         }
 
+        function toggleManualSearch() {
+            document.getElementById('manualSearchSection').classList.toggle('hidden');
+        }
+
+        // เวลาที่ให้ออเดอร์ "เสร็จสิ้น" ค้างอยู่ในลิสต์ "ออเดอร์ของฉัน" ก่อนถูกซ่อนอัตโนมัติ
+        // กันลูกค้าเปิดมาวันถัดไปแล้วงงว่าเป็นออเดอร์วันไหน (ตั้งไว้ 2 ชม. หลังกดเสร็จสิ้นที่หลังบ้าน)
+        const COMPLETED_ORDER_HIDE_MS = 2 * 60 * 60 * 1000;
+
+        function isCompletedOrderExpired(data) {
+            if (data.order_status !== 'completed' || !data.completed_at) return false;
+            let completedTime = new Date(String(data.completed_at).replace(' ', 'T')).getTime();
+            if (isNaN(completedTime)) return false;
+            return (Date.now() - completedTime) >= COMPLETED_ORDER_HIDE_MS;
+        }
+
         // การ์ดแสดงสถานะออเดอร์ ใช้ร่วมกันทั้งลิสต์ "ออเดอร์ของฉัน" อัตโนมัติ และผลค้นหาด้วยเลขออเดอร์
         function buildOrderStatusCardHtml(data) {
             let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
@@ -1207,9 +1261,14 @@
             let ids = getMyOrders();
             let section = document.getElementById('myOrdersSection');
             let list = document.getElementById('myOrdersList');
+            let toggleWrap = document.getElementById('manualSearchToggleWrap');
+            let manualSection = document.getElementById('manualSearchSection');
 
             if (ids.length === 0) {
                 section.classList.add('hidden');
+                // ไม่มีออเดอร์ที่จำไว้เลย — โชว์ช่องค้นหาแบบเปิดอยู่แล้วไปเลย ไม่ต้องกดปุ่มเพิ่ม
+                toggleWrap.classList.add('hidden');
+                manualSection.classList.remove('hidden');
                 return;
             }
 
@@ -1221,6 +1280,11 @@
                     let res = await fetch(`/api/order/status/${encodeURIComponent(id)}`);
                     if (res.status === 404) { removeFromMyOrders(id); return null; }
                     let data = await res.json().catch(() => null);
+                    if (res.ok && data && isCompletedOrderExpired(data)) {
+                        // เสร็จสิ้นมาเกิน 2 ชม. แล้ว — เอาออกจากลิสต์ กันลูกค้าสับสนว่าเป็นออเดอร์วันไหน
+                        removeFromMyOrders(id);
+                        return null;
+                    }
                     return (res.ok && data) ? data : null;
                 } catch (e) { return null; } // เน็ตหลุด — ข้ามไปก่อน ไม่ลบออกจากลิสต์ เดี๋ยวลองใหม่รอบหน้า
             }));
@@ -1229,6 +1293,10 @@
             list.innerHTML = cards.length > 0
                 ? cards.join('')
                 : '<p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 8px;">ไม่พบออเดอร์ที่บันทึกไว้</p>';
+
+            // มีลิสต์อัตโนมัติให้ดูอยู่แล้ว — ซ่อนช่องค้นหาด้วยมือไว้ก่อน เหลือแค่ลิงก์เผื่ออยากค้นหาเลขอื่น
+            toggleWrap.classList.remove('hidden');
+            manualSection.classList.add('hidden');
         }
 
         async function checkOrderStatus() {

@@ -176,6 +176,8 @@
         .status-filter-tab[data-status="preparing"].active { background: #0284c7; }
         .status-filter-tab[data-status="ready"].active { background: #16a34a; }
         .status-filter-tab[data-status="completed"].active { background: #64748b; }
+        .status-filter-tab[data-status="p_active"].active { background: #16a34a; }
+        .status-filter-tab[data-status="p_inactive"].active { background: #64748b; }
 
         /* VIEW TOGGLE (รายการออเดอร์ / สรุปสิ่งที่ต้องทำ) */
         .view-toggle-btn {
@@ -208,8 +210,12 @@
         .kitchen-order-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; padding-left: 2px; border-left: 3px solid var(--primary-light); }
         .kitchen-order-item { padding-left: 10px; font-size: 0.92rem; color: var(--text-main); }
         .kitchen-order-item-opt { display: block; font-size: 0.8rem; color: #d97706; padding-left: 10px; }
-        .kitchen-order-item-note { display: block; font-size: 0.8rem; color: #ef4444; padding-left: 10px; }
         .kitchen-order-footer { display: flex; justify-content: flex-end; border-top: 1px solid var(--border-color); padding-top: 10px; }
+        .kitchen-order-notes {
+            margin: 2px 0 14px; padding: 8px 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;
+            font-size: 0.85rem; color: #b91c1c; line-height: 1.5;
+        }
+        .kitchen-order-notes b { color: #991b1b; }
 
         /* DASHBOARD GRIDS */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 28px; }
@@ -507,6 +513,7 @@
                     <h3 style="font-size: 1.15rem; font-weight: 700;">รายการสินค้า</h3>
                     <button class="btn" onclick="openProductModal()"><i class="fas fa-plus"></i> เพิ่มสินค้าใหม่</button>
                 </div>
+                <div id="productFilterGroup" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;"></div>
                 <div class="table-responsive">
                     <table>
                         <thead>
@@ -716,6 +723,8 @@
         let allOrders = [];
         let orderDateFilter = 'today';   // 'today' | 'all' | 'YYYY-MM-DD'
         let orderStatusFilter = 'all';   // 'all' | 'confirmed' | 'preparing' | 'ready' | 'completed'
+        let productStatusFilter = 'all'; // 'all' | 'p_active' | 'p_inactive'
+        let allProductsList = [];        // เก็บลิสต์เต็มไว้ กรองใหม่ตอนสลับ tab โดยไม่ต้องยิง API ซ้ำ
         let ordersView = 'list';         // 'list' | 'kitchen'
         let ordersPollTimer = null;
 
@@ -1231,9 +1240,14 @@
                     <div class="kitchen-order-item">
                         ${esc(Number(it.qty || 1))}x ${esc(it.name)}
                         ${it.options ? `<span class="kitchen-order-item-opt">${esc(it.options)}</span>` : ''}
-                        ${it.customNote ? `<span class="kitchen-order-item-note">หมายเหตุ: ${esc(it.customNote)}</span>` : ''}
                     </div>
                 `).join('');
+
+                // รวมโน้ตของทุกรายการในออเดอร์นี้ไว้เป็นหมายเหตุเดียวท้ายการ์ด แทนที่จะแทรกกระจายทีละรายการ
+                let notesList = items.filter(it => it.customNote).map(it => `${esc(it.name)}: ${esc(it.customNote)}`);
+                let notesHtml = notesList.length > 0
+                    ? `<div class="kitchen-order-notes"><b><i class="fas fa-comment-alt"></i> หมายเหตุ:</b> ${notesList.join(' • ')}</div>`
+                    : '';
 
                 return `
                     <div class="kitchen-order-card">
@@ -1243,6 +1257,7 @@
                         </div>
                         <div class="kitchen-order-customer">${esc(o.customer_name)} · ${esc(fmtPhone(o.phone))}</div>
                         <div class="kitchen-order-items">${itemsHtml}</div>
+                        ${notesHtml}
                         <div class="kitchen-order-footer">
                             <span class="status-badge status-pending" data-id="${esc(o.order_id)}" data-status="confirmed" onclick="cycleOrderStatus(this.dataset.id, this.dataset.status)" title="คลิกเพื่อเปลี่ยนสถานะ">
                                 <i class="fas fa-clock"></i> ยืนยันแล้ว <i class="fas fa-sync-alt" style="font-size: 0.7rem; opacity: 0.6; margin-left: 2px;"></i>
@@ -1392,7 +1407,6 @@
             if (items && Array.isArray(items) && items.length > 0) {
                 itemsContainer.innerHTML = items.map((item, index) => {
                     let optionText = item.options ? `<div style="font-size: 0.85rem; color: #d97706; margin-top: 4px;"><i class="fas fa-check-circle"></i> ตัวเลือก: ${esc(item.options)}</div>` : '';
-                    let noteText = item.customNote ? `<div style="font-size: 0.85rem; color: #ef4444; margin-top: 2px;"><i class="fas fa-comment-alt"></i> โน้ต: ${esc(item.customNote)}</div>` : '';
                     // app.py เก็บ price (ราคาหลักที่ server ดึงเอง) แยกจาก extra_price (ราคาตัวเลือกเสริม)
                     let qty = Number(item.qty) || 1;
                     let lineTotal = (Number(item.price || 0) + Number(item.extra_price || 0)) * qty;
@@ -1402,12 +1416,19 @@
                             <div>
                                 <div style="font-weight: 600; color: var(--text-main);">${index + 1}. ${esc(item.name)} (x${qty})</div>
                                 ${optionText}
-                                ${noteText}
                             </div>
                             <div style="font-weight: 700; color: var(--text-main); white-space: nowrap;">฿${fmtMoney(lineTotal)}</div>
                         </div>
                     `;
                 }).join('');
+
+                // รวมโน้ตของทุกรายการไว้เป็นหมายเหตุเดียวท้ายรายการสินค้า แทนที่จะแทรกกระจายทีละรายการ
+                let notesList = items.filter(it => it.customNote).map(it => `${esc(it.name)}: ${esc(it.customNote)}`);
+                if (notesList.length > 0) {
+                    itemsContainer.innerHTML += `
+                        <div class="kitchen-order-notes"><b><i class="fas fa-comment-alt"></i> หมายเหตุ:</b> ${notesList.join(' • ')}</div>
+                    `;
+                }
             } else {
                 itemsContainer.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 10px;">ไม่มีข้อมูลรายการสินค้า</div>`;
             }
@@ -1449,13 +1470,52 @@
             }
         }
 
+        function isProductActive(p) {
+            return p.status === 'active' || p.status === true || p.status === '1';
+        }
+
+        function renderProductFilterTabs() {
+            let counts = {
+                all: allProductsList.length,
+                p_active: allProductsList.filter(isProductActive).length,
+                p_inactive: allProductsList.filter(p => !isProductActive(p)).length
+            };
+            let tabs = [
+                { key: 'all', text: 'ทั้งหมด' },
+                { key: 'p_active', text: 'เปิดขาย' },
+                { key: 'p_inactive', text: 'ยังไม่เปิดขาย' }
+            ];
+            document.getElementById('productFilterGroup').innerHTML = tabs.map(t => `
+                <button type="button" class="status-filter-tab ${productStatusFilter === t.key ? 'active' : ''}" data-status="${t.key}" onclick="setProductStatusFilter('${t.key}')">
+                    ${esc(t.text)} <span class="count">${counts[t.key] || 0}</span>
+                </button>
+            `).join('');
+        }
+
+        function setProductStatusFilter(key) {
+            productStatusFilter = key;
+            renderProductFilterTabs();
+            renderProductsList();
+        }
+
         async function loadProducts() {
             let res = await adminFetch('/api/admin/products');
             let data = await res.json();
-            let productsList = Array.isArray(data) ? data : (data.products || []);
+            allProductsList = Array.isArray(data) ? data : (data.products || []);
 
             productsById = {};
-            productsList.forEach(p => { productsById[p.id] = p; });
+            allProductsList.forEach(p => { productsById[p.id] = p; });
+
+            renderProductFilterTabs();
+            renderProductsList();
+        }
+
+        function renderProductsList() {
+            let productsList = allProductsList.filter(p => {
+                if (productStatusFilter === 'p_active') return isProductActive(p);
+                if (productStatusFilter === 'p_inactive') return !isProductActive(p);
+                return true;
+            });
 
             let tbody = document.getElementById('productsTableBody');
             tbody.innerHTML = '';
@@ -1464,8 +1524,9 @@
             mobileContainer.innerHTML = '';
 
             if(productsList.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">ยังไม่มีข้อมูลสินค้า</td></tr>`;
-                mobileContainer.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; background: white; border-radius: 12px;">ยังไม่มีข้อมูลสินค้า</div>`;
+                let msg = allProductsList.length === 0 ? 'ยังไม่มีข้อมูลสินค้า' : 'ไม่มีสินค้าตามเงื่อนไขที่เลือก';
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">${msg}</td></tr>`;
+                mobileContainer.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; background: white; border-radius: 12px;">${msg}</div>`;
                 return;
             }
 
@@ -1473,7 +1534,7 @@
             let cardsHtml = '';
 
             productsList.forEach(p => {
-                let isChecked = (p.status === 'active' || p.status === true || p.status === '1') ? 'checked' : '';
+                let isChecked = isProductActive(p) ? 'checked' : '';
                 let img = esc(p.image_url || '');
 
                 rowsHtml += `
@@ -1535,7 +1596,13 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({id: id, status: newStatus})
             });
-            if(!res.ok) { alert('ไม่สามารถเปลี่ยนสถานะได้'); loadProducts(); }
+            if(!res.ok) { alert('ไม่สามารถเปลี่ยนสถานะได้'); loadProducts(); return; }
+            // อัปเดต cache ในเครื่องทันที ไม่ต้องรอ fetch ใหม่ — ให้ filter/นับจำนวนอัปเดตทันทีตาม tab ที่เลือกอยู่
+            if (productsById[id]) productsById[id].status = newStatus;
+            let cached = allProductsList.find(p => p.id === id);
+            if (cached) cached.status = newStatus;
+            renderProductFilterTabs();
+            if (productStatusFilter !== 'all') renderProductsList();
         }
 
         function addOptionGroupField(groupTitle = '', choices = [], groupType = 'radio') {
