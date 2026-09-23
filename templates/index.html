@@ -368,8 +368,12 @@
                     </div>
                     <div class="form-group">
                         <label>วันที่ต้องการรับอาหาร</label>
-                        <input type="date" id="custDate">
+                        <div id="custDateDisplay" style="padding: 12px 16px; border: 1.5px solid var(--border-color); border-radius: 12px; background: #F8F9FA; font-weight: 600; color: var(--text-main); font-size: 0.95rem;"></div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 6px;">ร้านรับพรีออเดอร์ล่วงหน้า 1 วัน — สั่งวันนี้ ได้รับพรุ่งนี้ จึงกำหนดวันที่ให้อัตโนมัติ</div>
+                        <input type="hidden" id="custDate" value="">
                     </div>
+
+                    <div id="cutoffNotice" class="hidden" style="background: #FFF0F3; border: 1.5px solid var(--primary); color: var(--primary); border-radius: 12px; padding: 12px 16px; font-size: 0.85rem; font-weight: 600; margin-bottom: 16px;"></div>
                     
                     <div class="form-group">
                         <label>เวลาที่ต้องการรับอาหาร</label>
@@ -680,34 +684,66 @@
             loadCategories();
             loadProducts();
             loadDeliveryTimes();
-            startProductsAutoRefresh();
 
             // กู้คืนตะกร้าจากรอบก่อน เผื่อหน้าจอถูกรีเฟรช/ปิดไปกลางคัน
             loadCartFromStorage();
             renderCart();
             updateCartCount();
 
-            // ใช้วันที่ตามเวลาเครื่องผู้ใช้ (valueAsDate ใช้ UTC ทำให้ช่วง 00:00-07:00 ของไทยได้วันเมื่อวาน)
-            const d = new Date();
-            const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            const t = new Date(d);
-            t.setDate(t.getDate() + 1);
-            const tomorrow = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
-
-            const dateInput = document.getElementById('custDate');
-            dateInput.min = today;        // ห้ามเลือกวันที่ผ่านมาแล้ว
-            dateInput.value = tomorrow;   // ค่าเริ่มต้นเป็นพรุ่งนี้ เพราะเป็นระบบพรีออเดอร์
-
-            // กันไว้อีกชั้น เผื่อบางเบราว์เซอร์ยอมให้พิมพ์วันที่ในอดีตเข้ามาทั้งที่ตั้ง min ไว้แล้ว
-            dateInput.addEventListener('change', () => {
-                if (dateInput.value && dateInput.value < today) {
-                    showAlert('ไม่สามารถเลือกวันที่ผ่านมาแล้วได้ กรุณาเลือกวันที่ปัจจุบันหรือวันถัดไป');
-                    dateInput.value = tomorrow;
-                }
-            });
+            // ระบบพรีออเดอร์รายวัน: สั่งวันนี้ ได้รับพรุ่งนี้เสมอ — ลูกค้าเลือกวันเองไม่ได้แล้ว กำหนดอัตโนมัติแทน
+            setDeliveryDateToTomorrow();
+            loadOrderCutoffSetting();
+            // เช็คซ้ำเรื่อยๆ เผื่อลูกค้าเปิดหน้าค้างไว้ข้ามเวลาปิดรับพอดี
+            setInterval(loadOrderCutoffSetting, 60000);
 
             resumePendingOrderIfAny();
         });
+
+        const THAI_MONTHS_SHORT = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+
+        function setDeliveryDateToTomorrow() {
+            // valueAsDate/toISOString ใช้ UTC ทำให้ช่วง 00:00-07:00 ของไทยได้วันผิด จึงประกอบสตริงจากเวลาเครื่องเองแทน
+            const t = new Date();
+            t.setDate(t.getDate() + 1);
+            const y = t.getFullYear(), m = String(t.getMonth() + 1).padStart(2, '0'), dd = String(t.getDate()).padStart(2, '0');
+            const tomorrow = `${y}-${m}-${dd}`;
+            document.getElementById('custDate').value = tomorrow;
+            document.getElementById('custDateDisplay').innerText = `พรุ่งนี้ (${t.getDate()} ${THAI_MONTHS_SHORT[t.getMonth()]} ${y + 543})`;
+        }
+
+        // เวลาปิดรับออเดอร์ประจำวันที่แอดมินตั้งไว้ (ถ้ามี) — เตือนลูกค้าก่อนกดสั่งจริง ไม่ต้องรอให้ server ปฏิเสธ
+        let orderCutoffTime = '';
+        async function loadOrderCutoffSetting() {
+            try {
+                let res = await fetch('/api/settings');
+                let data = await res.json();
+                orderCutoffTime = data.order_cutoff_time || '';
+            } catch (e) { /* เน็ตหลุด — เช็คตอนกดสั่งจริงอีกทีฝั่ง server อยู่แล้ว */ }
+            syncCutoffUI();
+        }
+
+        function isPastOrderCutoff() {
+            if (!orderCutoffTime) return false;
+            const now = new Date();
+            const nowStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+            return nowStr >= orderCutoffTime;
+        }
+
+        function syncCutoffUI() {
+            const notice = document.getElementById('cutoffNotice');
+            const checkoutBtn = document.querySelector('#checkoutFormSection .btn-checkout');
+            const proceedBtn = document.getElementById('btnProceedCheckout');
+            const past = isPastOrderCutoff();
+
+            if (past) {
+                notice.innerText = `หมดเวลารับออเดอร์ประจำวันนี้แล้ว (ปิดรับเวลา ${orderCutoffTime} น.) กรุณากลับมาสั่งใหม่พรุ่งนี้นะคะ`;
+                notice.classList.remove('hidden');
+            } else {
+                notice.classList.add('hidden');
+            }
+            if (checkoutBtn) { checkoutBtn.disabled = past; checkoutBtn.style.opacity = past ? '0.5' : ''; checkoutBtn.style.cursor = past ? 'not-allowed' : ''; }
+            if (proceedBtn) { proceedBtn.disabled = past; proceedBtn.style.opacity = past ? '0.5' : ''; proceedBtn.style.cursor = past ? 'not-allowed' : ''; }
+        }
 
         // ถ้าหน้าจอเด้ง/รีเฟรชระหว่างแนบสลิป ออเดอร์จะถูกสร้างไปแล้วฝั่ง server (แค่ยังไม่จ่าย)
         // ตอนเปิดหน้าใหม่ ให้เช็คว่ายังค้างอยู่ไหม แล้วพากลับไปหน้าจ่ายเงินเดิมให้เลย ไม่ต้องสร้างออเดอร์ซ้ำ
@@ -784,6 +820,13 @@
                         ${esc(c.name)}
                     </div>
                 `).join(''));
+
+                // โพลคืนหมวดหมู่ใหม่ทุก 15 วิ (ดู setInterval ด้านล่าง) — ชิปถูกสร้างใหม่ทุกครั้ง
+                // ต้องไฮไลท์หมวดที่ลูกค้ากำลังดูอยู่ซ้ำ ไม่งั้นตัวกรองที่เลือกไว้จะดูเหมือนหลุดทุก 15 วิ
+                document.querySelectorAll('.chip').forEach(c => {
+                    let name = c.dataset.name || 'ทั้งหมด';
+                    c.classList.toggle('active', name === currentCategory);
+                });
             } catch(e) { console.error(e); }
         }
 
@@ -792,53 +835,32 @@
                 let res = await fetch('/api/products');
                 let data = await res.json();
                 allProducts = Array.isArray(data) ? data : [];
-                applyCurrentFilterAndRender();
+                applyCurrentCategoryFilter();
             } catch(e) { console.error(e); }
         }
 
-        function applyCurrentFilterAndRender() {
-            if (currentCategory && currentCategory !== 'ทั้งหมด') {
-                renderProducts(allProducts.filter(p => p.category === currentCategory));
-            } else {
+        // เมนูที่แสดงอยู่ตามหมวดหมู่ที่เลือกไว้ตอนนี้ — ใช้ทั้งตอนกรองเองและตอนโพลรีเฟรชอัตโนมัติ
+        function applyCurrentCategoryFilter() {
+            if (currentCategory === 'ทั้งหมด') {
                 renderProducts(allProducts);
+            } else {
+                renderProducts(allProducts.filter(p => p.category === currentCategory));
             }
-        }
-
-        // เช็คเมนูใหม่/เปลี่ยนแปลงจากแอดมินเป็นระยะ แล้วอัปเดตหน้าลูกค้าเงียบๆ โดยไม่รีเฟรชหน้า
-        // (ไม่กระทบตะกร้าหรือ modal ที่ลูกค้ากำลังเปิดอยู่)
-        let productsPollTimer = null;
-        function startProductsAutoRefresh(intervalMs = 15000) {
-            if (productsPollTimer) clearInterval(productsPollTimer);
-            productsPollTimer = setInterval(async () => {
-                try {
-                    let res = await fetch('/api/products');
-                    if (!res.ok) return;
-                    let data = await res.json();
-                    data = Array.isArray(data) ? data : [];
-                    // เทียบข้อมูลก่อน ถ้าไม่มีอะไรเปลี่ยนก็ไม่ต้อง re-render ให้จอกระพริบ
-                    if (JSON.stringify(data) !== JSON.stringify(allProducts)) {
-                        allProducts = data;
-                        applyCurrentFilterAndRender();
-                        // อัปเดตหมวดหมู่ด้วย เผื่อแอดมินเพิ่มหมวดใหม่พร้อมเมนู
-                        loadCategories();
-                    }
-                } catch (e) {
-                    // เน็ตหลุดชั่วคราว ปล่อยผ่าน รอบหน้าลองใหม่
-                }
-            }, intervalMs);
         }
 
         function filterCategory(category, element) {
             currentCategory = category;
             document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
             element.classList.add('active');
-
-            if(category === 'ทั้งหมด') {
-                renderProducts(allProducts);
-            } else {
-                renderProducts(allProducts.filter(p => p.category === category));
-            }
+            applyCurrentCategoryFilter();
         }
+
+        // เมนูใหม่ที่แอดมินเพิ่ม/แก้ไข/ลบ จะเด้งมาที่หน้าลูกค้าเองภายใน 15 วิ โดยไม่ต้องรีเฟรชหน้า
+        // (ไม่แตะตะกร้า/ฟอร์มที่ลูกค้ากำลังกรอกอยู่ — แค่รีเฟรชกริดเมนูกับชิปหมวดหมู่เท่านั้น)
+        setInterval(() => {
+            loadProducts();
+            loadCategories();
+        }, 15000);
 
         function renderProducts(products) {
             let grid = document.getElementById('foodGrid');
@@ -1062,6 +1084,9 @@
                 list.innerHTML = '<p style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 0.9rem;">ตะกร้ายังว่างอยู่เลยน้า</p>';
                 document.getElementById('cartTotalPrice').innerText = '฿0';
                 currentTotal = 0;
+                // บั๊กเดิม: ลบสินค้าชิ้นสุดท้ายจนตะกร้าว่าง แล้ว return ตรงนี้ก่อนถึง saveCartToStorage() ด้านล่าง
+                // ทำให้ localStorage ยังเก็บตะกร้าเก่าค้างไว้ — รีเฟรชหน้าจอสินค้าที่ลบไปแล้วเลยกลับมา
+                saveCartToStorage();
                 return;
             }
 
@@ -1100,6 +1125,7 @@
 
         function showCheckoutForm() {
             if(cart.length === 0) { showAlert('กรุณาเลือกเมนูก่อนดำเนินการต่อด้วยนะค้าบ'); return; }
+            if(isPastOrderCutoff()) { showAlert(`หมดเวลารับออเดอร์ประจำวันนี้แล้ว (ปิดรับเวลา ${orderCutoffTime} น.) กรุณากลับมาสั่งใหม่พรุ่งนี้นะคะ`); return; }
             document.getElementById('checkoutFormSection').classList.remove('hidden');
             document.getElementById('btnProceedCheckout').classList.add('hidden');
         }
@@ -1114,6 +1140,7 @@
 
                 if(!name || !phone || !date || !time) { showAlert('กรุณากรอกข้อมูลและเลือกเวลาส่งให้ครบถ้วนด้วยนะค้า'); return false; }
                 if(cart.length === 0) { showAlert('ตะกร้ายังว่างอยู่ กรุณาเลือกเมนูก่อนนะค้า'); return false; }
+                if(isPastOrderCutoff()) { showAlert(`หมดเวลารับออเดอร์ประจำวันนี้แล้ว (ปิดรับเวลา ${orderCutoffTime} น.) กรุณากลับมาสั่งใหม่พรุ่งนี้นะคะ`); return false; }
 
                 const todayCheck = new Date();
                 const todayStr = `${todayCheck.getFullYear()}-${String(todayCheck.getMonth() + 1).padStart(2, '0')}-${String(todayCheck.getDate()).padStart(2, '0')}`;

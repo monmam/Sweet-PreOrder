@@ -555,6 +555,17 @@
 
             <!-- 5. DELIVERY TIMES -->
             <div id="section-delivery" class="admin-section hidden">
+                <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto 20px;">
+                    <h3 style="font-size: 1.15rem; font-weight: 700;">เวลาปิดรับออเดอร์ประจำวัน</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; margin-bottom: 20px;">หลังเวลานี้ ลูกค้าจะสั่งออเดอร์ใหม่ไม่ได้จนกว่าจะขึ้นวันถัดไป (ปล่อยว่าง = เปิดรับออเดอร์ตลอดเวลา)</p>
+                    <form id="cutoffForm" onsubmit="saveCutoffTime(event)" style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+                        <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 160px;">
+                            <label>ปิดรับออเดอร์เวลา</label>
+                            <input type="time" id="cutoffTimeInput">
+                        </div>
+                        <button type="submit" class="btn"><i class="fas fa-save"></i> บันทึก</button>
+                    </form>
+                </div>
                 <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
                         <div>
@@ -722,7 +733,7 @@
         let productsById = {};
         let allOrders = [];
         let orderDateFilter = 'today';   // 'today' | 'all' | 'YYYY-MM-DD'
-        let orderStatusFilter = 'all';   // 'all' | 'confirmed' | 'preparing' | 'ready' | 'completed'
+        let orderStatusFilter = 'confirmed';   // 'confirmed' | 'preparing' | 'ready' | 'completed'
         let productStatusFilter = 'all'; // 'all' | 'p_active' | 'p_inactive'
         let allProductsList = [];        // เก็บลิสต์เต็มไว้ กรองใหม่ตอนสลับ tab โดยไม่ต้องยิง API ซ้ำ
         let ordersView = 'list';         // 'list' | 'kitchen'
@@ -927,7 +938,7 @@
             }
             if(pageName === 'products') loadProducts();
             if(pageName === 'categories') loadCategories();
-            if(pageName === 'delivery') loadDeliveryTimes();
+            if(pageName === 'delivery') { loadDeliveryTimes(); loadCutoffTime(); }
             if(pageName === 'reports') loadReports('today');
         }
 
@@ -1059,8 +1070,9 @@
             return s === 'pending' ? 'confirmed' : s;
         }
 
+        // เอา "ทั้งหมด" ออกจากแท็บสถานะตามที่ขอ (แท็บ "ทั้งหมด" ของ "วันที่รับอาหาร" ด้านบนยังอยู่ คนละตัวกัน)
+        // ค่าเริ่มต้นเปิดมาที่ "ยืนยันแล้ว" เป็นแท็บแรก
         const STATUS_FILTER_LIST = [
-            { key: 'all', text: 'ทั้งหมด' },
             { key: 'confirmed', text: 'ยืนยันแล้ว' },
             { key: 'preparing', text: 'กำลังเตรียม' },
             { key: 'ready', text: 'พร้อมรับ' },
@@ -1847,6 +1859,31 @@
                 body: JSON.stringify({id: id})
             });
             loadCategories();
+        }
+
+        async function loadCutoffTime() {
+            try {
+                let res = await adminFetch('/api/admin/settings');
+                let data = await res.json();
+                document.getElementById('cutoffTimeInput').value = (res.ok && data.order_cutoff_time) ? data.order_cutoff_time : '';
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveCutoffTime(e) {
+            e.preventDefault();
+            const btn = e.submitter || document.querySelector('#cutoffForm button[type="submit"]');
+            return withActionLock('saveCutoff', btn, 'กำลังบันทึก', async () => {
+                let val = document.getElementById('cutoffTimeInput').value; // '' = ปิดฟีเจอร์ (เปิดรับตลอด)
+                let res = await adminFetch('/api/admin/settings', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({order_cutoff_time: val})
+                });
+                if (res.ok) { showSuccessModal('บันทึกเวลาปิดรับออเดอร์เรียบร้อยแล้ว'); return true; }
+                let err = await res.json().catch(() => ({}));
+                alert('บันทึกไม่สำเร็จ' + (err.error ? ': ' + err.error : ''));
+                return false;
+            });
         }
 
         async function loadDeliveryTimes() {
