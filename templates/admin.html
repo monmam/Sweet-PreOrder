@@ -1124,10 +1124,11 @@
         function renderOrders() {
             const today = todayStr();
 
-            // 1) กรองตามวันที่รับอาหาร (delivery_date) ก่อน — นี่คือขอบเขตที่ตัวเลขในแท็บสถานะจะอ้างอิงถึง
+            // 1) กรองตามวันที่ "สั่งออเดอร์" (created_at) ก่อน — นี่คือขอบเขตที่ตัวเลขในแท็บสถานะจะอ้างอิงถึง
+            // (ไม่ใช่วันที่รับอาหาร/delivery_date — วันสั่งกับวันรับเป็นคนละวันกันได้ เช่น สั่งวันนี้ รับพรุ่งนี้)
             let dateFiltered = allOrders.filter(o => {
                 if (orderDateFilter === 'all') return true;
-                let d = String(o.delivery_date || '').slice(0, 10);
+                let d = String(o.created_at || '').slice(0, 10);
                 if (orderDateFilter === 'today') return d === today;
                 return d === orderDateFilter;
             });
