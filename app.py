@@ -131,7 +131,12 @@ def get_setting(key, default=''):
 
 
 def set_setting(key, value):
-    supabase.table('settings').upsert({'key': key, 'value': value}).execute()
+    # BUG FIX: without on_conflict='key', upsert() falls back to the table's primary key
+    # (its auto id column), which is never 'order_cutoff_time' etc. So every save was
+    # INSERTING a brand-new row instead of updating the existing one — the old row was
+    # still there too, and get_settings_raw() would land on whichever row Supabase
+    # happened to return last, so a save looked successful but didn't reliably take effect.
+    supabase.table('settings').upsert({'key': key, 'value': value}, on_conflict='key').execute()
     get_settings_raw(force_refresh=True)
 
 
@@ -182,20 +187,56 @@ def normalize_time_format(time_val):
     return t_str
 
 
+
+# ออเดอร์ที่ลูกค้ากดเสร็จสิ้นแล้ว (completed) จะถูกลบทิ้งอัตโนมัติหลังผ่านไปเท่านี้นาที
+# กันไม่ให้ออเดอร์เก่าๆ ค้างปนกับออเดอร์ปัจจุบันในหน้าสถานะของลูกค้า
+COMPLETED_ORDER_RETENTION_MINUTES = 90  # 1.5 ชม. — ปรับได้ตามต้องการ (1-2 ชม.)
+
+# ออเดอร์ที่จ่ายเงินแล้วและสถานะยัง "ยืนยันแล้ว" (confirmed) ค้างอยู่ แต่ผ่านวันรับอาหาร
+# (delivery_date) ไปแล้วเกินกี่วัน ถือว่าค้าง/ถูกลืม ไม่มีใครมากดเปลี่ยนสถานะต่อ ให้ลบทิ้งอัตโนมัติ
+STALE_CONFIRMED_ORDER_DAYS = 1
+
+
 def cleanup_pending_orders():
     try:
         orders = get_orders(force_refresh=True)
         now = datetime.now()
         for row in orders:
             payment_status = str(row.get('payment_status', '')).lower()
+            order_status = str(row.get('order_status', '')).lower()
             created_at_str = str(row.get('created_at', ''))
+            completed_at_str = str(row.get('completed_at', '') or '')
+
             if payment_status == 'pending' and created_at_str:
                 try:
                     created_at = datetime.strptime(created_at_str, '%Y-%m-%d %H:%M:%S')
                     if now - created_at > timedelta(minutes=10):
                         supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                        continue
                 except Exception:
                     pass
+
+            # ลบออเดอร์ที่ "เสร็จสิ้น" แล้วเกิน COMPLETED_ORDER_RETENTION_MINUTES
+            if order_status == 'completed' and completed_at_str:
+                try:
+                    completed_at = datetime.strptime(completed_at_str, '%Y-%m-%d %H:%M:%S')
+                    if now - completed_at > timedelta(minutes=COMPLETED_ORDER_RETENTION_MINUTES):
+                        supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                        continue
+                except Exception:
+                    pass
+
+            # ลบออเดอร์ที่ค้างสถานะ "ยืนยันแล้ว" (จ่ายเงินแล้วแต่ไม่มีใครกดเปลี่ยนสถานะต่อ)
+            # นานเกิน STALE_CONFIRMED_ORDER_DAYS วันหลังวันรับอาหารที่ระบุไว้
+            if order_status == 'confirmed' and payment_status == 'paid':
+                delivery_date_str = str(row.get('delivery_date', '') or '')[:10]
+                if delivery_date_str:
+                    try:
+                        delivery_date = datetime.strptime(delivery_date_str, '%Y-%m-%d').date()
+                        if (now.date() - delivery_date).days >= STALE_CONFIRMED_ORDER_DAYS:
+                            supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                    except Exception:
+                        pass
         get_orders(force_refresh=True)
     except Exception as e:
         print('Cleanup error:', e)
