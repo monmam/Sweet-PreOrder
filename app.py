@@ -151,6 +151,213 @@ def get_order_cutoff_time():
         return None
 
 
+# ============================================================
+# LINE Login + Messaging API
+# ============================================================
+# ค่าเหล่านี้อ่านจาก environment variable บนเซิร์ฟเวอร์เท่านั้น — ห้ามฝังค่าจริงในไฟล์นี้เด็ดขาด
+LINE_LOGIN_CHANNEL_ID = os.getenv('LINE_LOGIN_CHANNEL_ID', '')
+LINE_LOGIN_CHANNEL_SECRET = os.getenv('LINE_LOGIN_CHANNEL_SECRET', '')
+LINE_CHANNEL_ID = os.getenv('LINE_CHANNEL_ID', '')
+LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
+LINE_LOGIN_ENABLED = bool(LINE_LOGIN_CHANNEL_ID and LINE_LOGIN_CHANNEL_SECRET)
+LINE_MESSAGING_ENABLED = bool(LINE_CHANNEL_ACCESS_TOKEN)
+
+
+def line_push_message(line_user_id, text):
+    """ส่งข้อความหา LINE user คนเดียว (push message) — เงียบๆ ถ้า config ไม่ครบหรือ error กันคำสั่งหลักพัง"""
+    if not LINE_MESSAGING_ENABLED or not line_user_id:
+        return False
+    try:
+        res = requests.post(
+            'https://api.line.me/v2/bot/message/push',
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}',
+            },
+            json={'to': line_user_id, 'messages': [{'type': 'text', 'text': text[:5000]}]},
+            timeout=8,
+        )
+        if res.status_code != 200:
+            print('LINE push error:', res.status_code, res.text)
+        return res.status_code == 200
+    except Exception as e:
+        print('LINE push exception:', e)
+        return False
+
+
+def notify_admin_line(text):
+    """แจ้งเตือนแอดมิน (คนเดียว) ผ่าน LINE — ใช้ line_user_id ที่ผูกไว้ในตาราง settings"""
+    admin_line_id = get_setting('admin_line_user_id', '')
+    if admin_line_id:
+        line_push_message(admin_line_id, text)
+
+
+ORDER_STATUS_TH = {
+    'confirmed': 'ยืนยันออเดอร์แล้ว 🧾',
+    'preparing': 'กำลังเตรียมอาหาร 👩‍🍳',
+    'ready': 'พร้อมให้รับแล้ว ✅',
+    'completed': 'เสร็จสิ้นแล้ว 🎉',
+}
+
+
+def notify_customer_order_status(order_id, order_status):
+    """แจ้งลูกค้าเจ้าของออเดอร์ (ถ้าล็อกอินด้วย LINE ตอนสั่ง) ว่าสถานะเปลี่ยน"""
+    try:
+        res = supabase.table('orders').select('line_user_id').eq('order_id', order_id).limit(1).execute()
+        if not res.data:
+            return
+        line_user_id = res.data[0].get('line_user_id')
+        if not line_user_id:
+            return  # ลูกค้าคนนี้สั่งแบบ guest ไม่ได้ login ไว้ — ไม่มีที่ให้ส่งแจ้งเตือน
+        status_text = ORDER_STATUS_TH.get(order_status, order_status)
+        line_push_message(line_user_id, f"📦 อัปเดตออเดอร์ #{order_id}\nสถานะ: {status_text}")
+    except Exception as e:
+        print('notify_customer_order_status error:', e)
+
+
+@app.route('/api/line/login-url', methods=['GET'])
+def api_line_login_url():
+    """สร้างลิงก์ให้ลูกค้ากด 'Login ด้วย LINE' — ฝัง state กันปลอมคำขอ (CSRF) ไว้ใน session"""
+    if not LINE_LOGIN_ENABLED:
+        return jsonify({'error': 'LINE Login ยังไม่ได้ตั้งค่า'}), 503
+    state = secrets.token_urlsafe(16)
+    session['line_login_state'] = state
+    redirect_uri = request.args.get('redirect_uri') or (request.url_root.rstrip('/') + '/api/line/callback')
+    session['line_login_redirect_uri'] = redirect_uri
+    params = {
+        'response_type': 'code',
+        'client_id': LINE_LOGIN_CHANNEL_ID,
+        'redirect_uri': redirect_uri,
+        'state': state,
+        'scope': 'profile openid',
+        'bot_prompt': 'aggressive',  # ชวนเพิ่มเพื่อน OA ต่อทันทีหลัง login เสร็จ
+    }
+    from urllib.parse import urlencode
+    return jsonify({'login_url': 'https://access.line.me/oauth2/v2.1/authorize?' + urlencode(params)})
+
+
+@app.route('/api/line/callback', methods=['GET'])
+def api_line_callback():
+    """LINE เด้งกลับมาที่นี่หลังลูกค้ากด login/ยินยอม — แลก code เป็น token แล้วดึงโปรไฟล์"""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    error = request.args.get('error')
+    frontend_url = '/'  # ปรับเป็นหน้าจริงถ้าต้องการ redirect ไปหน้าเฉพาะ
+
+    if error or not code or state != session.get('line_login_state'):
+        return f"<script>window.location.href='{frontend_url}?line_login=failed';</script>"
+
+    redirect_uri = session.get('line_login_redirect_uri') or (request.url_root.rstrip('/') + '/api/line/callback')
+    try:
+        token_res = requests.post(
+            'https://api.line.me/oauth2/v2.1/token',
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            data={
+                'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': redirect_uri,
+                'client_id': LINE_LOGIN_CHANNEL_ID,
+                'client_secret': LINE_LOGIN_CHANNEL_SECRET,
+            },
+            timeout=8,
+        )
+        token_data = token_res.json()
+        if token_res.status_code != 200:
+            print('LINE token exchange error:', token_data)
+            return f"<script>window.location.href='{frontend_url}?line_login=failed';</script>"
+
+        profile_res = requests.get(
+            'https://api.line.me/v2/profile',
+            headers={'Authorization': f"Bearer {token_data['access_token']}"},
+            timeout=8,
+        )
+        profile = profile_res.json()
+
+        session['line_user_id'] = profile.get('userId')
+        session['line_display_name'] = profile.get('displayName', '')
+        session['line_picture_url'] = profile.get('pictureUrl', '')
+        session.pop('line_login_state', None)
+        session.pop('line_login_redirect_uri', None)
+        return f"<script>window.location.href='{frontend_url}?line_login=success';</script>"
+    except Exception as e:
+        print('LINE callback exception:', e)
+        return f"<script>window.location.href='{frontend_url}?line_login=failed';</script>"
+
+
+@app.route('/api/line/me', methods=['GET'])
+def api_line_me():
+    """หน้าเว็บเรียกเช็คว่าตอนนี้ล็อกอินด้วย LINE อยู่ไหม เอาไว้โชว์ชื่อ/รูปมุมบนขวา"""
+    if session.get('line_user_id'):
+        return jsonify({
+            'logged_in': True,
+            'display_name': session.get('line_display_name', ''),
+            'picture_url': session.get('line_picture_url', ''),
+        })
+    return jsonify({'logged_in': False, 'login_enabled': LINE_LOGIN_ENABLED})
+
+
+@app.route('/api/line/logout', methods=['POST'])
+def api_line_logout():
+    session.pop('line_user_id', None)
+    session.pop('line_display_name', None)
+    session.pop('line_picture_url', None)
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/line/start-link', methods=['POST'])
+def api_admin_line_start_link():
+    """แอดมินกดปุ่ม 'เชื่อมต่อ LINE แจ้งเตือน' ในหน้าแอดมิน → ได้โค้ด 6 หลัก ใช้ครั้งเดียว หมดอายุ 5 นาที
+    เอาไปพิมพ์ส่งในแชท LINE OA ของร้าน — กันไม่ให้ลูกค้าทั่วไปตั้งตัวเองเป็นแอดมินได้เองจากการทักแชทเข้ามาเฉยๆ"""
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not LINE_MESSAGING_ENABLED:
+        return jsonify({'error': 'ยังไม่ได้ตั้งค่า LINE_CHANNEL_ACCESS_TOKEN บนเซิร์ฟเวอร์'}), 503
+    code = ''.join(random.choices(string.digits, k=6))
+    set_setting('admin_line_link_code', code)
+    set_setting('admin_line_link_expires', (datetime.now() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S'))
+    return jsonify({'code': code, 'expires_in_minutes': 5})
+
+
+@app.route('/api/line/webhook', methods=['POST'])
+def api_line_webhook():
+    """LINE ยิง event มาที่นี่ (follow / unfollow / message) — ต้องตั้ง URL นี้ไว้ใน Messaging API settings"""
+    body = request.get_data(as_text=True)
+    signature = request.headers.get('X-Line-Signature', '')
+
+    if LINE_CHANNEL_SECRET:
+        import hashlib, hmac
+        expected = base64.b64encode(hmac.new(LINE_CHANNEL_SECRET.encode('utf-8'), body.encode('utf-8'), hashlib.sha256).digest()).decode('utf-8')
+        if not hmac.compare_digest(expected, signature):
+            return jsonify({'error': 'Invalid signature'}), 403
+
+    events = (request.json or {}).get('events', [])
+    for event in events:
+        try:
+            source_user_id = event.get('source', {}).get('userId')
+            if not source_user_id:
+                continue
+
+            if event.get('type') == 'message' and event.get('message', {}).get('type') == 'text':
+                text = event['message']['text'].strip()
+                # เทียบกับโค้ด 6 หลักที่แอดมินขอไว้ (ถ้ายังไม่หมดอายุ) — ใช้ผูก LINE ของแอดมินเข้ากับระบบ
+                pending_code = get_setting('admin_line_link_code', '')
+                expires_str = get_setting('admin_line_link_expires', '')
+                if pending_code and text == pending_code and expires_str:
+                    try:
+                        expires_at = datetime.strptime(expires_str, '%Y-%m-%d %H:%M:%S')
+                        if datetime.now() <= expires_at:
+                            set_setting('admin_line_user_id', source_user_id)
+                            set_setting('admin_line_link_code', '')
+                            line_push_message(source_user_id, '✅ เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่สำเร็จแล้วค่ะ')
+                    except ValueError:
+                        pass
+        except Exception as e:
+            print('LINE webhook event error:', e)
+
+    return jsonify({'success': True})
+
+
 def get_orders(force_refresh=False):
     global _orders_cache, _cache_time
     now = time.time()
@@ -614,9 +821,11 @@ def api_create_order():
         'created_at': created_at,
         'paid_at': None,
         'trans_ref': None,
+        'line_user_id': session.get('line_user_id'),  # None ถ้าลูกค้าไม่ได้ login ด้วย LINE (สั่งแบบ guest)
     }
     supabase.table('orders').insert(order_row).execute()
     get_orders(force_refresh=True)
+    notify_admin_line(f"🔔 ออเดอร์ใหม่ #{order_id}\nลูกค้า: {customer_name}\nยอด: ฿{total}\nรับ: {delivery_date} {delivery_time}")
     return jsonify({'order_id': order_id, 'total': total})
 
 
@@ -804,6 +1013,10 @@ def api_upload_slip():
             update_data['trans_ref'] = str(trans_ref)
         supabase.table('orders').update(update_data).eq('order_id', order_id).execute()
         get_orders(force_refresh=True)
+        # แจ้งลูกค้าเรื่อง "จ่ายเงินสำเร็จ" แยกจากสถานะออเดอร์ (order_status ยังเป็น confirmed เหมือนเดิม ไม่ได้เปลี่ยน)
+        order_row_for_line = next((o for o in orders if o.get('order_id') == order_id), None)
+        if order_row_for_line and order_row_for_line.get('line_user_id'):
+            line_push_message(order_row_for_line['line_user_id'], f"✅ ตรวจสอบสลิปสำเร็จ ออเดอร์ #{order_id} ชำระเงินเรียบร้อยแล้วค่ะ")
         return jsonify({'success': True, 'message': 'Payment verified successfully'})
     else:
         supabase.table('orders').delete().eq('order_id', order_id).execute()
@@ -1091,6 +1304,7 @@ def api_admin_orders():
         res = supabase.table('orders').update(update_fields).eq('order_id', order_id).execute()
         if res.data:
             get_orders(force_refresh=True)
+            notify_customer_order_status(order_id, new_status)
             return jsonify({'success': True})
         return jsonify({'error': 'Order not found'}), 404
 
@@ -1142,7 +1356,10 @@ def api_admin_settings():
 
     if request.method == 'GET':
         cutoff = get_order_cutoff_time()
-        return jsonify({'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else ''})
+        return jsonify({
+            'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else '',
+            'line_notify_linked': bool(get_setting('admin_line_user_id', '')),
+        })
 
     data = request.json or {}
     raw_cutoff = str(data.get('order_cutoff_time', '')).strip()
