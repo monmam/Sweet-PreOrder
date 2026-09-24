@@ -186,11 +186,22 @@ def line_push_message(line_user_id, text):
         return False
 
 
-def notify_admin_line(text):
-    """แจ้งเตือนแอดมิน (คนเดียว) ผ่าน LINE — ใช้ line_user_id ที่ผูกไว้ในตาราง settings"""
-    admin_line_id = get_setting('admin_line_user_id', '')
-    if admin_line_id:
-        line_push_message(admin_line_id, text)
+def get_admin_recipients():
+    """รายชื่อแอดมินทั้งหมดที่เพิ่มไว้สำหรับรับแจ้งเตือนออเดอร์ใหม่ผ่าน LINE (ตาราง admin_recipients)"""
+    try:
+        res = supabase.table('admin_recipients').select('*').order('created_at').execute()
+        return res.data or []
+    except Exception as e:
+        print('get_admin_recipients error:', e)
+        return []
+
+
+def notify_admins(text):
+    """แจ้งเตือนออเดอร์ใหม่ไปหาแอดมินทุกคนที่ (1) ผูก LINE ไว้แล้ว และ (2) เปิดสวิตช์ enabled ไว้
+    ถ้าเปิดไว้ 2 คนก็ส่งให้ทั้ง 2 คน ถ้าเปิดไว้คนเดียวก็ส่งแค่คนนั้น ปิดไว้ทุกคนก็ไม่ส่งเลย"""
+    for r in get_admin_recipients():
+        if r.get('enabled') and r.get('line_user_id'):
+            line_push_message(r['line_user_id'], text)
 
 
 ORDER_STATUS_TH = {
@@ -305,17 +316,68 @@ def api_line_logout():
     return jsonify({'success': True})
 
 
-@app.route('/api/admin/line/start-link', methods=['POST'])
-def api_admin_line_start_link():
-    """แอดมินกดปุ่ม 'เชื่อมต่อ LINE แจ้งเตือน' ในหน้าแอดมิน → ได้โค้ด 6 หลัก ใช้ครั้งเดียว หมดอายุ 5 นาที
+@app.route('/api/admin/recipients', methods=['GET', 'POST'])
+def api_admin_recipients():
+    """รายชื่อแอดมินที่รับแจ้งเตือนออเดอร์ใหม่ผ่าน LINE — เพิ่มได้หลายคน แต่ละคนเปิด/ปิดสวิตช์รับแจ้งเตือนแยกกันได้"""
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        recipients = get_admin_recipients()
+        # ไม่ส่ง link_code ออกไปที่ frontend — เป็นรายละเอียดภายในของขั้นตอนผูก LINE เท่านั้น
+        safe = [{
+            'id': r.get('id'), 'name': r.get('name'), 'enabled': bool(r.get('enabled')),
+            'linked': bool(r.get('line_user_id')),
+        } for r in recipients]
+        return jsonify(safe)
+
+    data = request.json or {}
+    name = str(data.get('name', '')).strip()
+    if not name:
+        return jsonify({'error': 'กรุณาระบุชื่อแอดมิน'}), 400
+    rid = f"ADM-{int(datetime.now().timestamp())}"
+    supabase.table('admin_recipients').insert({'id': rid, 'name': name, 'enabled': True}).execute()
+    return jsonify({'success': True, 'id': rid})
+
+
+@app.route('/api/admin/recipients/<rid>', methods=['PATCH', 'DELETE'])
+def api_admin_recipient_detail(rid):
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'DELETE':
+        supabase.table('admin_recipients').delete().eq('id', rid).execute()
+        return jsonify({'success': True})
+
+    data = request.json or {}
+    update = {}
+    if 'enabled' in data:
+        update['enabled'] = bool(data['enabled'])
+    if 'name' in data and str(data['name']).strip():
+        update['name'] = str(data['name']).strip()
+    if not update:
+        return jsonify({'error': 'ไม่มีข้อมูลให้แก้ไข'}), 400
+    res = supabase.table('admin_recipients').update(update).eq('id', rid).execute()
+    if not res.data:
+        return jsonify({'error': 'ไม่พบแอดมินคนนี้'}), 404
+    return jsonify({'success': True})
+
+
+@app.route('/api/admin/recipients/<rid>/start-link', methods=['POST'])
+def api_admin_recipient_start_link(rid):
+    """แอดมินกดปุ่ม 'เชื่อมต่อ LINE' สำหรับแอดมินคนที่ระบุ → ได้โค้ด 6 หลัก ใช้ครั้งเดียว หมดอายุ 5 นาที
     เอาไปพิมพ์ส่งในแชท LINE OA ของร้าน — กันไม่ให้ลูกค้าทั่วไปตั้งตัวเองเป็นแอดมินได้เองจากการทักแชทเข้ามาเฉยๆ"""
     if not session.get('admin_logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
     if not LINE_MESSAGING_ENABLED:
         return jsonify({'error': 'ยังไม่ได้ตั้งค่า LINE_CHANNEL_ACCESS_TOKEN บนเซิร์ฟเวอร์'}), 503
     code = ''.join(random.choices(string.digits, k=6))
-    set_setting('admin_line_link_code', code)
-    set_setting('admin_line_link_expires', (datetime.now() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S'))
+    expires = (datetime.now() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+    res = supabase.table('admin_recipients').update({
+        'link_code': code, 'link_code_expires': expires,
+    }).eq('id', rid).execute()
+    if not res.data:
+        return jsonify({'error': 'ไม่พบแอดมินคนนี้'}), 404
     return jsonify({'code': code, 'expires_in_minutes': 5})
 
 
@@ -340,18 +402,21 @@ def api_line_webhook():
 
             if event.get('type') == 'message' and event.get('message', {}).get('type') == 'text':
                 text = event['message']['text'].strip()
-                # เทียบกับโค้ด 6 หลักที่แอดมินขอไว้ (ถ้ายังไม่หมดอายุ) — ใช้ผูก LINE ของแอดมินเข้ากับระบบ
-                pending_code = get_setting('admin_line_link_code', '')
-                expires_str = get_setting('admin_line_link_expires', '')
-                if pending_code and text == pending_code and expires_str:
-                    try:
-                        expires_at = datetime.strptime(expires_str, '%Y-%m-%d %H:%M:%S')
-                        if datetime.now() <= expires_at:
-                            set_setting('admin_line_user_id', source_user_id)
-                            set_setting('admin_line_link_code', '')
-                            line_push_message(source_user_id, '✅ เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่สำเร็จแล้วค่ะ')
-                    except ValueError:
-                        pass
+                # เทียบกับโค้ด 6 หลักที่แอดมินคนใดคนหนึ่งขอไว้ (ถ้ายังไม่หมดอายุ) — ใช้ผูก LINE ของแอดมินคนนั้นเข้ากับระบบ
+                if text and text.isdigit() and len(text) == 6:
+                    match = supabase.table('admin_recipients').select('*').eq('link_code', text).limit(1).execute()
+                    if match.data:
+                        r = match.data[0]
+                        expires_str = r.get('link_code_expires', '')
+                        try:
+                            expires_at = datetime.strptime(expires_str, '%Y-%m-%d %H:%M:%S') if expires_str else None
+                            if expires_at and datetime.now() <= expires_at:
+                                supabase.table('admin_recipients').update({
+                                    'line_user_id': source_user_id, 'link_code': None, 'link_code_expires': None,
+                                }).eq('id', r['id']).execute()
+                                line_push_message(source_user_id, f"✅ เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่สำเร็จแล้วค่ะ (บัญชี: {r.get('name', '')})")
+                        except ValueError:
+                            pass
         except Exception as e:
             print('LINE webhook event error:', e)
 
@@ -838,7 +903,7 @@ def api_create_order():
     }
     supabase.table('orders').insert(order_row).execute()
     get_orders(force_refresh=True)
-    notify_admin_line(f"🔔 ออเดอร์ใหม่ #{order_id}\nลูกค้า: {customer_name}\nยอด: ฿{total}\nรับ: {delivery_date} {delivery_time}")
+    notify_admins(f"🔔 ออเดอร์ใหม่ #{order_id}\nลูกค้า: {customer_name}\nยอด: ฿{total}\nรับ: {delivery_date} {delivery_time}")
     return jsonify({'order_id': order_id, 'total': total})
 
 
@@ -1386,7 +1451,6 @@ def api_admin_settings():
         cutoff = get_order_cutoff_time()
         return jsonify({
             'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else '',
-            'line_notify_linked': bool(get_setting('admin_line_user_id', '')),
         })
 
     data = request.json or {}
