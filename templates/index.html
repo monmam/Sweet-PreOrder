@@ -2,7 +2,7 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sweet PreOrder - สั่งอาหารอร่อยๆ</title>
     <!-- ไอคอนรูปชามอาหารบนแท็บเบราว์เซอร์ -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍲</text></svg>">
@@ -882,6 +882,22 @@
             loadProducts();
             loadCategories();
         }, 15000);
+
+        // Auto-refresh หน้าสถานะออเดอร์ทุก 18 วิ ระหว่างที่ลูกค้าเปิดแท็บนี้ค้างไว้ ไม่ต้องกดปุ่มเอง
+        // (รีเฟรชเงียบๆ เบื้องหลัง ไม่รบกวนช่องพิมพ์เลขออเดอร์ที่ลูกค้าอาจกำลังพิมพ์อยู่)
+        setInterval(() => {
+            let statusTab = document.getElementById('tabStatus');
+            if (statusTab.classList.contains('hidden')) return; // ไม่ได้เปิดแท็บนี้อยู่ ไม่ต้องยิง request เปล่าๆ
+
+            let myOrdersSection = document.getElementById('myOrdersSection');
+            if (!myOrdersSection.classList.contains('hidden')) renderMyOrders();
+
+            let resultDiv = document.getElementById('orderStatusResult');
+            let manualSection = document.getElementById('manualSearchSection');
+            if (!manualSection.classList.contains('hidden') && resultDiv.innerHTML.trim() !== '') {
+                checkOrderStatus();
+            }
+        }, 18000);
 
         function renderProducts(products) {
             let grid = document.getElementById('foodGrid');
