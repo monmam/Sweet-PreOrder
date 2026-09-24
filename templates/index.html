@@ -312,6 +312,9 @@
                 สถานะออเดอร์
             </button>
         </div>
+        <div id="lineLoginArea" style="display:flex; align-items:center; gap:8px; margin-left:8px;">
+            <!-- เติม JS ตอนโหลดหน้า: ปุ่ม Login ด้วย LINE หรือ ชื่อ/รูปคนที่ login อยู่ -->
+        </div>
     </header>
 
     <main>
@@ -698,6 +701,8 @@
             // เช็คซ้ำเรื่อยๆ เผื่อลูกค้าเปิดหน้าค้างไว้ข้ามเวลาปิดรับพอดี
             setInterval(loadOrderCutoffSetting, 60000);
 
+            initLineLoginUI();
+
             resumePendingOrderIfAny();
         });
 
@@ -808,6 +813,59 @@
 
         function closeAlertModal() {
             document.getElementById('alertModal').style.display = 'none';
+        }
+
+        // ===== LINE Login =====
+        async function initLineLoginUI() {
+            // เพิ่งเด้งกลับมาจากหน้า LINE login — โชว์ผลลัพธ์แล้วเก็บกวาด query string ออกจาก URL
+            const params = new URLSearchParams(window.location.search);
+            const loginResult = params.get('line_login');
+            if (loginResult) {
+                if (loginResult === 'failed') showAlert('เข้าสู่ระบบด้วย LINE ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+                window.history.replaceState({}, '', window.location.pathname);
+            }
+            renderLineLoginArea();
+        }
+
+        async function renderLineLoginArea() {
+            const area = document.getElementById('lineLoginArea');
+            try {
+                const res = await fetch('/api/line/me');
+                const data = await res.json();
+                if (data.logged_in) {
+                    area.innerHTML = `
+                        <img src="${esc(data.picture_url || '')}" style="width:28px; height:28px; border-radius:50%; object-fit:cover; ${data.picture_url ? '' : 'display:none;'}">
+                        <span style="font-size:0.8rem; font-weight:600; color: var(--text-main);">${esc(data.display_name || 'LINE')}</span>
+                        <button onclick="lineLogout()" style="background:none; border:none; color: var(--text-muted); font-size:0.75rem; text-decoration:underline; cursor:pointer;">ออกจากระบบ</button>
+                    `;
+                } else if (data.login_enabled) {
+                    area.innerHTML = `
+                        <button onclick="lineLogin()" style="display:flex; align-items:center; gap:6px; background:#06C755; color:white; border:none; border-radius:10px; padding:7px 12px; font-size:0.8rem; font-weight:600; cursor:pointer;">
+                            เข้าสู่ระบบด้วย LINE
+                        </button>
+                    `;
+                } else {
+                    area.innerHTML = ''; // ยังไม่ได้ตั้งค่า LINE Login บนเซิร์ฟเวอร์ — ซ่อนปุ่มไปเลย ไม่ให้ลูกค้าสับสน
+                }
+            } catch (e) {
+                area.innerHTML = '';
+            }
+        }
+
+        async function lineLogin() {
+            try {
+                const res = await fetch('/api/line/login-url?redirect_uri=' + encodeURIComponent(window.location.origin + '/api/line/callback'));
+                const data = await res.json();
+                if (data.login_url) window.location.href = data.login_url;
+                else showAlert('ระบบ Login ด้วย LINE ยังไม่พร้อมใช้งาน');
+            } catch (e) {
+                showAlert('เกิดข้อผิดพลาด กรุณาลองใหม่');
+            }
+        }
+
+        async function lineLogout() {
+            await fetch('/api/line/logout', { method: 'POST' });
+            renderLineLoginArea();
         }
 
         function switchTab(tabName) {

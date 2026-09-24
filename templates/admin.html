@@ -566,6 +566,16 @@
                         <button type="submit" class="btn"><i class="fas fa-save"></i> บันทึก</button>
                     </form>
                 </div>
+                <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto 20px;">
+                    <h3 style="font-size: 1.15rem; font-weight: 700;">แจ้งเตือนออเดอร์ใหม่ผ่าน LINE</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; margin-bottom: 20px;">เชื่อมต่อครั้งเดียว ต่อไปมีออเดอร์ใหม่เข้าจะมีข้อความ LINE แจ้งทันที ไม่ต้องเปิดหน้านี้ค้างไว้</p>
+                    <div id="lineLinkStatus" style="font-size: 0.85rem; margin-bottom: 12px;"></div>
+                    <button class="btn" onclick="startLineLink()" id="btnStartLineLink"><i class="fab fa-line"></i> เชื่อมต่อ LINE แจ้งเตือน</button>
+                    <div id="lineLinkCodeBox" class="hidden" style="margin-top: 16px; background: #F0FFF4; border: 1.5px solid #38A169; border-radius: 12px; padding: 16px;">
+                        <p style="font-size: 0.85rem; color: #2F855A; margin-bottom: 8px;">เปิดแชท LINE OA ของร้าน แล้วพิมพ์โค้ดนี้ส่งไปภายใน 5 นาที:</p>
+                        <div id="lineLinkCode" style="font-size: 1.6rem; font-weight: 800; letter-spacing: 4px; color: #2F855A;"></div>
+                    </div>
+                </div>
                 <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
                         <div>
@@ -1953,7 +1963,47 @@
                 let res = await adminFetch('/api/admin/settings');
                 let data = await res.json();
                 document.getElementById('cutoffTimeInput').value = (res.ok && data.order_cutoff_time) ? data.order_cutoff_time : '';
+                renderLineLinkStatus(res.ok && data.line_notify_linked);
             } catch (e) { console.error(e); }
+        }
+
+        function renderLineLinkStatus(linked) {
+            const statusEl = document.getElementById('lineLinkStatus');
+            const btn = document.getElementById('btnStartLineLink');
+            if (linked) {
+                statusEl.innerHTML = '<span style="color:#2F855A; font-weight:600;"><i class="fas fa-check-circle"></i> เชื่อมต่อแล้ว พร้อมรับแจ้งเตือน</span>';
+                btn.innerText = 'เชื่อมต่อ LINE เบอร์อื่นแทน';
+            } else {
+                statusEl.innerHTML = '<span style="color:var(--text-muted);">ยังไม่ได้เชื่อมต่อ</span>';
+                btn.innerHTML = '<i class="fab fa-line"></i> เชื่อมต่อ LINE แจ้งเตือน';
+            }
+        }
+
+        let lineLinkPollTimer = null;
+        async function startLineLink() {
+            let res = await adminFetch('/api/admin/line/start-link', { method: 'POST' });
+            let data = await res.json();
+            if (!res.ok) { alert('เชื่อมต่อไม่สำเร็จ: ' + (data.error || 'ไม่ทราบสาเหตุ')); return; }
+
+            document.getElementById('lineLinkCode').innerText = data.code;
+            document.getElementById('lineLinkCodeBox').classList.remove('hidden');
+
+            if (lineLinkPollTimer) clearInterval(lineLinkPollTimer);
+            let checksLeft = 30; // เช็คทุก 10 วิ นาน 5 นาที (เท่าเวลาที่โค้ดมีอายุ)
+            lineLinkPollTimer = setInterval(async () => {
+                checksLeft--;
+                let checkRes = await adminFetch('/api/admin/settings');
+                let checkData = await checkRes.json();
+                if (checkRes.ok && checkData.line_notify_linked) {
+                    clearInterval(lineLinkPollTimer);
+                    document.getElementById('lineLinkCodeBox').classList.add('hidden');
+                    renderLineLinkStatus(true);
+                    showSuccessModal('เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่ผ่าน LINE สำเร็จแล้ว');
+                } else if (checksLeft <= 0) {
+                    clearInterval(lineLinkPollTimer);
+                    document.getElementById('lineLinkCodeBox').classList.add('hidden');
+                }
+            }, 10000);
         }
 
         async function saveCutoffTime(e) {
