@@ -883,10 +883,15 @@
 
         function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
+        let lastCategoriesRaw = null;
         async function loadCategories() {
             try {
                 let res = await fetch('/api/categories');
-                let categories = await res.json();
+                let raw = await res.text();
+                // ข้ามการเรนเดอร์ใหม่ถ้าข้อมูลเหมือนเดิม — กันชิปหมวดหมู่กระพริบ/รีบิลด์ DOM ทุก 15 วิโดยไม่จำเป็น
+                if (raw === lastCategoriesRaw) return;
+                lastCategoriesRaw = raw;
+                let categories = JSON.parse(raw);
                 if (!Array.isArray(categories)) categories = [];
                 let container = document.getElementById('categoryChips');
                 const svg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path><line x1="3" y1="6" x2="21" y2="6"></line><path d="M16 10a4 4 0 0 1-8 0"></path></svg>`;
@@ -909,10 +914,16 @@
             } catch(e) { console.error(e); }
         }
 
+        let lastProductsRaw = null;
         async function loadProducts() {
             try {
                 let res = await fetch('/api/products');
-                let data = await res.json();
+                let raw = await res.text();
+                // ข้ามการเรนเดอร์ใหม่ถ้าข้อมูลเหมือนเดิม — เดิมกริดสินค้าถูกสร้างใหม่ทั้งหมดทุก 15 วิไม่ว่าจะมีอะไรเปลี่ยนหรือไม่
+                // ทำให้การ์ด/รูปภาพกระพริบและหน้าจอสะดุดเป็นระยะ ทั้งที่เมนูส่วนใหญ่ไม่ได้เปลี่ยนเลย
+                if (raw === lastProductsRaw) return;
+                lastProductsRaw = raw;
+                let data = JSON.parse(raw);
                 allProducts = Array.isArray(data) ? data : [];
                 applyCurrentCategoryFilter();
             } catch(e) { console.error(e); }
@@ -948,7 +959,7 @@
             if (statusTab.classList.contains('hidden')) return; // ไม่ได้เปิดแท็บนี้อยู่ ไม่ต้องยิง request เปล่าๆ
 
             let myOrdersSection = document.getElementById('myOrdersSection');
-            if (!myOrdersSection.classList.contains('hidden')) renderMyOrders();
+            if (!myOrdersSection.classList.contains('hidden')) renderMyOrders(true);
 
             let resultDiv = document.getElementById('orderStatusResult');
             let manualSection = document.getElementById('manualSearchSection');
@@ -1379,7 +1390,7 @@
         }
 
         // โชว์ออเดอร์ล่าสุดของลูกค้าคนนี้ (จำจาก localStorage ของเบราว์เซอร์) อัตโนมัติ ไม่ต้องพิมพ์เลขออเดอร์เอง
-        async function renderMyOrders() {
+        async function renderMyOrders(silent) {
             let ids = getMyOrders();
             let section = document.getElementById('myOrdersSection');
             let list = document.getElementById('myOrdersList');
@@ -1395,7 +1406,11 @@
             }
 
             section.classList.remove('hidden');
-            list.innerHTML = '<p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 8px;">กำลังโหลด...</p>';
+            // ตอนรีเฟรชอัตโนมัติเบื้องหลัง (silent) ไม่ต้องโชว์ "กำลังโหลด..." ทับการ์ดเดิม — เดิมมันเด้งขึ้นทุก 18 วิ
+            // ทำให้การ์ดสถานะหายวับไปแล้วโผล่ใหม่ ดูเหมือนหน้าจอสะดุดทั้งที่ไม่มีอะไรเปลี่ยน
+            if (!silent) {
+                list.innerHTML = '<p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 8px;">กำลังโหลด...</p>';
+            }
 
             let results = await Promise.all(ids.map(async id => {
                 try {

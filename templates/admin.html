@@ -590,11 +590,14 @@
                     </form>
                 </div>
                 <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto 20px;">
-                    <h3 style="font-size: 1.15rem; font-weight: 700;">แจ้งเตือนออเดอร์ใหม่ผ่าน LINE</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; margin-bottom: 20px;">เชื่อมต่อครั้งเดียว ต่อไปมีออเดอร์ใหม่เข้าจะมีข้อความ LINE แจ้งทันที ไม่ต้องเปิดหน้านี้ค้างไว้</p>
-                    <div id="lineLinkStatus" style="font-size: 0.85rem; margin-bottom: 12px;"></div>
-                    <button class="btn" onclick="startLineLink()" id="btnStartLineLink"><i class="fab fa-line"></i> เชื่อมต่อ LINE แจ้งเตือน</button>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 12px;">
+                        <h3 style="font-size: 1.15rem; font-weight: 700;">แจ้งเตือนออเดอร์ใหม่ผ่าน LINE</h3>
+                        <button class="btn" style="padding: 6px 12px; font-size: 0.85rem;" onclick="addAdminRecipient()"><i class="fas fa-plus"></i> เพิ่มแอดมิน</button>
+                    </div>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; margin-bottom: 20px;">เพิ่มแอดมินได้หลายคน แต่ละคนเชื่อมต่อ LINE ของตัวเองแล้วเปิด/ปิดสวิตช์ได้อิสระ — เปิดไว้กี่คนก็ส่งแจ้งเตือนออเดอร์ใหม่ให้ครบทุกคนที่เปิดอยู่</p>
+                    <div id="adminRecipientsList" style="display: flex; flex-direction: column; gap: 10px;"></div>
                     <div id="lineLinkCodeBox" class="hidden" style="margin-top: 16px; background: #F0FFF4; border: 1.5px solid #38A169; border-radius: 12px; padding: 16px;">
+                        <p style="font-size: 0.85rem; color: #2F855A; margin-bottom: 4px;" id="lineLinkCodeFor"></p>
                         <p style="font-size: 0.85rem; color: #2F855A; margin-bottom: 8px;">เปิดแชท LINE OA ของร้าน แล้วพิมพ์โค้ดนี้ส่งไปภายใน 5 นาที:</p>
                         <div id="lineLinkCode" style="font-size: 1.6rem; font-weight: 800; letter-spacing: 4px; color: #2F855A;"></div>
                     </div>
@@ -730,6 +733,7 @@
                         <i class="fas fa-cloud-upload-alt" style="font-size: 2rem; color: var(--primary);"></i>
                         <div style="font-weight: 600; font-size: 0.92rem; color: var(--text-main);">คลิกเพื่อเลือกรูปภาพ หรือลากไฟล์มาวางที่นี่</div>
                         <div style="font-size: 0.78rem; color: var(--text-muted);">รองรับไฟล์ PNG, JPG หรือ WEBP</div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">แนะนำขนาดรูป 900 x 600 พิกเซล (อัตราส่วน 3:2 แนวนอน) ไฟล์ไม่เกิน ~500KB เพื่อภาพคมชัดและโหลดเร็ว</div>
                         <img id="imagePreview" class="file-upload-preview" alt="Preview">
                     </div>
                 </div>
@@ -1610,27 +1614,12 @@
                 ? `<br><b>สลิปโอนเงิน:</b> <a href="javascript:void(0);" data-slip="${esc(order.slip_url)}" onclick="openSlipModal(this.dataset.slip)" style="color: var(--primary); text-decoration: underline; font-weight: 600;">[คลิกเพื่อดูรูปสลิป]</a>`
                 : '<br><b>สลิปโอนเงิน:</b> ไม่พบหลักฐานการโอน';
 
-            // ข้อมูลผลตรวจสอบสลิปจาก Thunder API — มีเฉพาะออเดอร์ที่ตรวจสอบสำเร็จแล้ว (trans_ref ถูกเซฟ)
-            let verifyHtml = order.trans_ref
-                ? `
-                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-color);">
-                    <b>ผลตรวจสอบสลิป (Thunder API)</b><br>
-                    <b>วันที่ในสลิป:</b> ${order.slip_date ? esc(order.slip_date) : '-'} <br>
-                    <b>API Status:</b> ${order.api_status ? esc(order.api_status) : '-'} <br>
-                    <b>หมายเลขอ้างอิง:</b> ${esc(order.trans_ref)} <br>
-                    <b>ยอดเงินในสลิป:</b> ${order.paid_amount ? '฿' + fmtMoney(order.paid_amount) : '-'} <br>
-                    <b>บัญชีผู้โอน:</b> ${order.sender_name ? esc(order.sender_name) : '-'}${order.sender_bank ? ' (' + esc(order.sender_bank) + ')' : ''}${order.sender_account ? ' ' + esc(order.sender_account) : ''} <br>
-                    <b>บัญชีผู้รับ:</b> ${order.receiver_account ? esc(order.receiver_account) : '-'}
-                </div>`
-                : '';
-
             infoBox.innerHTML = `
                 <b>ชื่อลูกค้า:</b> ${esc(order.customer_name)} <br>
                 <b>เบอร์โทร:</b> ${esc(fmtPhone(order.phone))} <br>
                 <b>วัน-เวลารับอาหาร:</b> ${fmtDate(order.delivery_date)} ${esc(order.delivery_time)} น. <br>
                 <b>ยอดรวมทั้งสิ้น:</b> ฿${fmtMoney(order.total)}
                 ${slipHtml}
-                ${verifyHtml}
             `;
 
             let items = parseOrderItems(order);
@@ -2095,28 +2084,81 @@
                 let res = await adminFetch('/api/admin/settings');
                 let data = await res.json();
                 document.getElementById('cutoffTimeInput').value = (res.ok && data.order_cutoff_time) ? data.order_cutoff_time : '';
-                renderLineLinkStatus(res.ok && data.line_notify_linked);
+            } catch (e) { console.error(e); }
+            loadAdminRecipients();
+        }
+
+        async function loadAdminRecipients() {
+            try {
+                let res = await adminFetch('/api/admin/recipients');
+                let list = await res.json();
+                if (!res.ok || !Array.isArray(list)) list = [];
+                renderAdminRecipients(list);
             } catch (e) { console.error(e); }
         }
 
-        function renderLineLinkStatus(linked) {
-            const statusEl = document.getElementById('lineLinkStatus');
-            const btn = document.getElementById('btnStartLineLink');
-            if (linked) {
-                statusEl.innerHTML = '<span style="color:#2F855A; font-weight:600;"><i class="fas fa-check-circle"></i> เชื่อมต่อแล้ว พร้อมรับแจ้งเตือน</span>';
-                btn.innerText = 'เชื่อมต่อ LINE เบอร์อื่นแทน';
-            } else {
-                statusEl.innerHTML = '<span style="color:var(--text-muted);">ยังไม่ได้เชื่อมต่อ</span>';
-                btn.innerHTML = '<i class="fab fa-line"></i> เชื่อมต่อ LINE แจ้งเตือน';
+        function renderAdminRecipients(list) {
+            const container = document.getElementById('adminRecipientsList');
+            if (list.length === 0) {
+                container.innerHTML = '<p style="font-size: 0.85rem; color: var(--text-muted);">ยังไม่มีแอดมินรับแจ้งเตือน — กด "เพิ่มแอดมิน" เพื่อเริ่มเชื่อมต่อ</p>';
+                return;
             }
+            container.innerHTML = list.map(r => `
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; background: #f8fafc; border: 1.5px solid var(--border-color); border-radius: 12px; flex-wrap: wrap;">
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.92rem;">${esc(r.name)}</div>
+                        <div style="font-size: 0.78rem; color: ${r.linked ? '#2F855A' : 'var(--text-muted)'};">
+                            <i class="fas ${r.linked ? 'fa-check-circle' : 'fa-circle-notch'}"></i>
+                            ${r.linked ? 'เชื่อมต่อ LINE แล้ว' : 'ยังไม่ได้เชื่อมต่อ LINE'}
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; cursor: pointer;" title="เปิด = ส่งแจ้งเตือนออเดอร์ใหม่ให้คนนี้">
+                            <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleAdminRecipient('${r.id}', this.checked)">
+                            รับแจ้งเตือน
+                        </label>
+                        <button class="btn" style="padding: 5px 10px; font-size: 0.78rem; background: #e2e8f0; color: var(--text-main);" onclick="startRecipientLink('${r.id}', '${esc(r.name).replace(/'/g, "\\'")}')"><i class="fab fa-line"></i> ${r.linked ? 'เชื่อมต่อใหม่' : 'เชื่อมต่อ'}</button>
+                        <button class="btn" style="padding: 5px 10px; font-size: 0.78rem; background: #fed7d7; color: #c53030;" onclick="deleteAdminRecipient('${r.id}', '${esc(r.name).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function addAdminRecipient() {
+            const name = prompt('ชื่อแอดมิน (เช่น ชื่อเล่นเจ้าของร้าน หรือพนักงาน):');
+            if (!name || !name.trim()) return;
+            let res = await adminFetch('/api/admin/recipients', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name.trim()})
+            });
+            let data = await res.json();
+            if (!res.ok) { alert('เพิ่มแอดมินไม่สำเร็จ: ' + (data.error || 'ไม่ทราบสาเหตุ')); return; }
+            loadAdminRecipients();
+        }
+
+        async function toggleAdminRecipient(id, enabled) {
+            let res = await adminFetch(`/api/admin/recipients/${encodeURIComponent(id)}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled})
+            });
+            if (!res.ok) { alert('บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง'); loadAdminRecipients(); }
+        }
+
+        async function deleteAdminRecipient(id, name) {
+            if (!confirm(`ลบแอดมิน "${name}" ออกจากรายชื่อรับแจ้งเตือนใช่หรือไม่?`)) return;
+            await adminFetch(`/api/admin/recipients/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            loadAdminRecipients();
         }
 
         let lineLinkPollTimer = null;
-        async function startLineLink() {
-            let res = await adminFetch('/api/admin/line/start-link', { method: 'POST' });
+        async function startRecipientLink(id, name) {
+            let res = await adminFetch(`/api/admin/recipients/${encodeURIComponent(id)}/start-link`, { method: 'POST' });
             let data = await res.json();
             if (!res.ok) { alert('เชื่อมต่อไม่สำเร็จ: ' + (data.error || 'ไม่ทราบสาเหตุ')); return; }
 
+            document.getElementById('lineLinkCodeFor').innerText = `สำหรับ: ${name}`;
             document.getElementById('lineLinkCode').innerText = data.code;
             document.getElementById('lineLinkCodeBox').classList.remove('hidden');
 
@@ -2124,13 +2166,14 @@
             let checksLeft = 30; // เช็คทุก 10 วิ นาน 5 นาที (เท่าเวลาที่โค้ดมีอายุ)
             lineLinkPollTimer = setInterval(async () => {
                 checksLeft--;
-                let checkRes = await adminFetch('/api/admin/settings');
+                let checkRes = await adminFetch('/api/admin/recipients');
                 let checkData = await checkRes.json();
-                if (checkRes.ok && checkData.line_notify_linked) {
+                let linkedNow = checkRes.ok && Array.isArray(checkData) && checkData.some(r => r.id === id && r.linked);
+                if (linkedNow) {
                     clearInterval(lineLinkPollTimer);
                     document.getElementById('lineLinkCodeBox').classList.add('hidden');
-                    renderLineLinkStatus(true);
-                    showSuccessModal('เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่ผ่าน LINE สำเร็จแล้ว');
+                    loadAdminRecipients();
+                    showSuccessModal(`เชื่อมต่อรับแจ้งเตือนออเดอร์ใหม่สำหรับ "${name}" สำเร็จแล้ว`);
                 } else if (checksLeft <= 0) {
                     clearInterval(lineLinkPollTimer);
                     document.getElementById('lineLinkCodeBox').classList.add('hidden');
