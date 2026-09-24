@@ -404,6 +404,19 @@ COMPLETED_ORDER_RETENTION_MINUTES = 90  # 1.5 ชม. — ปรับได้�
 STALE_CONFIRMED_ORDER_DAYS = 1
 
 
+def archive_and_delete_order(row):
+    """ย้ายออเดอร์ไปเก็บที่ตาราง orders_archive ก่อน แล้วค่อยลบออกจาก orders — กู้คืนได้เสมอถ้าพลาด
+    ไม่ใช่ลบทิ้งถาวรเหมือนเดิมอีกต่อไป (เดิมใช้ .delete() ตรงๆ ทำให้ออเดอร์จริงหายไปแบบกู้คืนไม่ได้)"""
+    try:
+        archive_row = {k: v for k, v in row.items() if k != 'id'}  # ตัด id เดิมทิ้ง กัน primary key ชนกัน ให้ตารางออกเลขใหม่เอง
+        archive_row['archived_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        supabase.table('orders_archive').insert(archive_row).execute()
+        supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+    except Exception as e:
+        # ถ้า archive ไม่สำเร็จ (เช่นยังไม่ได้สร้างตาราง orders_archive) ห้ามลบต้นฉบับเด็ดขาด กันข้อมูลหายซ้ำ
+        print('Archive failed, skip delete to be safe:', e)
+
+
 def cleanup_pending_orders():
     try:
         orders = get_orders(force_refresh=True)
@@ -423,17 +436,17 @@ def cleanup_pending_orders():
                 except Exception:
                     pass
 
-            # ลบออเดอร์ที่ "เสร็จสิ้น" แล้วเกิน COMPLETED_ORDER_RETENTION_MINUTES
+            # ย้าย (archive) ออเดอร์ที่ "เสร็จสิ้น" แล้วเกิน COMPLETED_ORDER_RETENTION_MINUTES
             if order_status == 'completed' and completed_at_str:
                 try:
                     completed_at = datetime.strptime(completed_at_str, '%Y-%m-%d %H:%M:%S')
                     if now - completed_at > timedelta(minutes=COMPLETED_ORDER_RETENTION_MINUTES):
-                        supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                        archive_and_delete_order(row)
                         continue
                 except Exception:
                     pass
 
-            # ลบออเดอร์ที่ค้างสถานะ "ยืนยันแล้ว" (จ่ายเงินแล้วแต่ไม่มีใครกดเปลี่ยนสถานะต่อ)
+            # ย้าย (archive) ออเดอร์ที่ค้างสถานะ "ยืนยันแล้ว" (จ่ายเงินแล้วแต่ไม่มีใครกดเปลี่ยนสถานะต่อ)
             # นานเกิน STALE_CONFIRMED_ORDER_DAYS วันหลังวันรับอาหารที่ระบุไว้
             if order_status == 'confirmed' and payment_status == 'paid':
                 delivery_date_str = str(row.get('delivery_date', '') or '')[:10]
@@ -441,7 +454,7 @@ def cleanup_pending_orders():
                     try:
                         delivery_date = datetime.strptime(delivery_date_str, '%Y-%m-%d').date()
                         if (now.date() - delivery_date).days >= STALE_CONFIRMED_ORDER_DAYS:
-                            supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                            archive_and_delete_order(row)
                     except Exception:
                         pass
         get_orders(force_refresh=True)
@@ -1281,6 +1294,21 @@ def api_admin_categories():
         supabase.table('categories').delete().eq('id', cat_id).execute()
         get_categories_raw(force_refresh=True)
         return jsonify({'success': True})
+
+
+@app.route('/api/admin/archive', methods=['GET'])
+def api_admin_archive():
+    """ออเดอร์ที่ถูกย้ายเข้า archive อัตโนมัติ (เสร็จสิ้นเกิน 90 นาที หรือค้างสถานะยืนยันนานเกินไป)
+    ให้แอดมินย้อนดูได้ว่า 'วันนี้ออเดอร์ของใครบ้าง' แม้จะถูกเคลียร์ออกจากลิสต์หลักไปแล้ว"""
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        res = supabase.table('orders_archive').select('*').order('created_at', desc=True).limit(500).execute()
+        return jsonify(res.data)
+    except Exception as e:
+        # ตารางอาจยังไม่ถูกสร้าง (ยังไม่ได้รัน SQL create table orders_archive) — ตอบเป็นลิสต์ว่างแทน error 500
+        print('api_admin_archive error:', e)
+        return jsonify([])
 
 
 @app.route('/api/admin/orders', methods=['GET', 'PUT'])
