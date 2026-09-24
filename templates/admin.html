@@ -470,6 +470,7 @@
                         <span class="toolbar-label">มุมมอง:</span>
                         <button class="view-toggle-btn" data-view="list" onclick="setOrdersView('list')"><i class="fas fa-list"></i> รายการออเดอร์</button>
                         <button class="view-toggle-btn" data-view="kitchen" onclick="setOrdersView('kitchen')"><i class="fas fa-utensils"></i> สรุปสิ่งที่ต้องทำ</button>
+                        <button class="view-toggle-btn" data-view="archive" onclick="setOrdersView('archive')"><i class="fas fa-box-archive"></i> ประวัติ/เก็บถาวร</button>
                     </div>
                     <div class="toolbar-row">
                         <span class="toolbar-label">วันที่รับอาหาร:</span>
@@ -504,6 +505,28 @@
                 <div id="kitchenView" class="hidden">
                     <div id="kitchenSummaryCard" class="kitchen-summary-card"></div>
                     <div id="kitchenOrdersList" class="kitchen-orders-list"></div>
+                </div>
+
+                <div id="archiveView" class="hidden">
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">ออเดอร์ที่ถูกย้ายออกจากลิสต์หลักอัตโนมัติ (เสร็จสิ้นนานแล้ว หรือค้างสถานะเกินกำหนด) — ดูย้อนหลังได้เท่านั้น แก้สถานะไม่ได้แล้ว</p>
+                    <div class="table-responsive">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Order ID</th>
+                                    <th>ลูกค้า</th>
+                                    <th>เบอร์โทร</th>
+                                    <th>วันที่สั่ง</th>
+                                    <th>เวลารับ</th>
+                                    <th>ยอดรวม</th>
+                                    <th>รายการ</th>
+                                    <th>สถานะตอนเก็บถาวร</th>
+                                </tr>
+                            </thead>
+                            <tbody id="archiveTableBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="mobileArchiveContainer" class="mobile-orders-container"></div>
                 </div>
             </div>
 
@@ -1196,9 +1219,101 @@
             renderOrders();
         }
 
+        let allArchiveOrders = [];
+        let archiveById = {};
+        let archiveLoaded = false;
+
         function setOrdersView(view) {
             ordersView = view;
+            if (view === 'archive' && !archiveLoaded) {
+                loadArchiveOrders();
+            } else {
+                renderOrders();
+            }
+        }
+
+        async function loadArchiveOrders() {
+            document.getElementById('archiveTableBody').innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--text-muted);">กำลังโหลด...</td></tr>';
+            try {
+                let res = await adminFetch('/api/admin/archive');
+                let data = await res.json();
+                allArchiveOrders = (res.ok && Array.isArray(data)) ? data : [];
+                archiveById = {};
+                allArchiveOrders.forEach(o => { archiveById[o.order_id] = o; });
+                archiveLoaded = true;
+            } catch (e) {
+                allArchiveOrders = [];
+            }
             renderOrders();
+        }
+
+        function viewArchiveOrder(orderId) {
+            openOrderDetailModal(archiveById[orderId]);
+        }
+
+        function renderArchiveList() {
+            const today = todayStr();
+            let filtered = allArchiveOrders.filter(o => {
+                if (orderDateFilter === 'all') return true;
+                let d = String(o.created_at || '').slice(0, 10);
+                if (orderDateFilter === 'today') return d === today;
+                return d === orderDateFilter;
+            });
+
+            let tbody = document.getElementById('archiveTableBody');
+            let mobileContainer = document.getElementById('mobileArchiveContainer');
+
+            if (filtered.length === 0) {
+                let msg = allArchiveOrders.length === 0 ? 'ยังไม่มีออเดอร์ที่ถูกเก็บถาวร' : 'ไม่มีออเดอร์ตามวันที่เลือก';
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">${msg}</td></tr>`;
+                mobileContainer.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; background: white; border-radius: 12px;">${msg}</div>`;
+                return;
+            }
+
+            let rowsHtml = '', cardsHtml = '';
+            filtered.forEach(o => {
+                let when = `${fmtDate(o.delivery_date)} ${esc(o.delivery_time)} น.`;
+                let statusTh = ORDER_STATUS_CONFIG[o.order_status] ? ORDER_STATUS_CONFIG[o.order_status].text : esc(o.order_status || '-');
+
+                rowsHtml += `
+                    <tr>
+                        <td style="font-weight: 700; color: var(--primary);">#${esc(o.order_id)}</td>
+                        <td style="font-weight: 600;">${esc(o.customer_name)}</td>
+                        <td>${esc(fmtPhone(o.phone))}</td>
+                        <td>${fmtDate(o.created_at)}</td>
+                        <td>${when}</td>
+                        <td style="font-weight: 700;">฿${fmtMoney(o.total)}</td>
+                        <td>
+                            <button class="btn" style="padding: 6px 12px; font-size: 0.82rem; background: #0284c7;" data-id="${esc(o.order_id)}" onclick="viewArchiveOrder(this.dataset.id)">
+                                <i class="fas fa-eye"></i> ดู
+                            </button>
+                        </td>
+                        <td>${statusTh}</td>
+                    </tr>
+                `;
+                cardsHtml += `
+                    <div class="mobile-order-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+                            <span style="font-weight: 700; color: var(--primary); font-size: 1.05rem;">#${esc(o.order_id)}</span>
+                            <span style="font-size: 0.8rem; color: var(--text-muted);">${statusTh}</span>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.92rem; margin-bottom: 12px;">
+                            <div><b>ลูกค้า:</b> ${esc(o.customer_name)}</div>
+                            <div><b>เบอร์โทร:</b> ${esc(fmtPhone(o.phone))}</div>
+                            <div><b>วันที่สั่ง:</b> ${fmtDate(o.created_at)}</div>
+                            <div><b>เวลารับ:</b> ${when}</div>
+                            <div><b>ยอดรวม:</b> <span style="font-weight: 700; color: var(--primary);">฿${fmtMoney(o.total)}</span></div>
+                        </div>
+                        <div style="display: flex; justify-content: flex-end; border-top: 1px solid var(--border-color); padding-top: 10px;">
+                            <button class="btn" style="padding: 6px 12px; font-size: 0.82rem; background: #0284c7;" data-id="${esc(o.order_id)}" onclick="viewArchiveOrder(this.dataset.id)">
+                                <i class="fas fa-eye"></i> ดูรายละเอียด
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            tbody.innerHTML = rowsHtml;
+            mobileContainer.innerHTML = cardsHtml;
         }
 
         // items เก็บเป็น JSON string หรือ array ก็ได้แล้วแต่ config ของ DB จึงต้องกันสองแบบไว้เสมอ
@@ -1230,6 +1345,23 @@
             });
 
             syncOrdersToolbarUI(counts);
+
+            if (ordersView === 'archive') {
+                document.getElementById('orderListView').classList.add('hidden');
+                document.getElementById('kitchenView').classList.add('hidden');
+                document.getElementById('archiveView').classList.remove('hidden');
+                document.getElementById('statusFilterGroup').classList.add('hidden');
+                renderArchiveList();
+                let archiveCount = allArchiveOrders.filter(o => {
+                    if (orderDateFilter === 'all') return true;
+                    let d = String(o.created_at || '').slice(0, 10);
+                    return orderDateFilter === 'today' ? d === today : d === orderDateFilter;
+                }).length;
+                let archiveLabel = orderDateFilter === 'today' ? 'ประวัติออเดอร์วันนี้' : (orderDateFilter === 'all' ? 'ประวัติออเดอร์ทั้งหมด' : `ประวัติออเดอร์วันที่ ${fmtDate(orderDateFilter)}`);
+                document.getElementById('ordersListTitle').innerText = `${archiveLabel} (${archiveCount})`;
+                return;
+            }
+            document.getElementById('archiveView').classList.add('hidden');
 
             if (ordersView === 'kitchen') {
                 document.getElementById('orderListView').classList.add('hidden');
