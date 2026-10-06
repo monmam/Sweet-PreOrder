@@ -509,7 +509,7 @@
             <div style="width: 60px; height: 60px; background: var(--primary-light); color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 14px auto;">
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
             </div>
-            <div class="section-title" style="margin-bottom: 6px; justify-content: center;">สั่งซื้อสำเร็จแล้วค่า!</div>
+            <div class="section-title" id="successTitle" style="margin-bottom: 6px; justify-content: center;">สั่งซื้อสำเร็จแล้วค่า!</div>
             <p id="successOrderInfo" style="margin-bottom: 20px; color: var(--text-muted); font-size: 0.9rem;"></p>
             <button class="btn-checkout" onclick="location.reload()">กลับสู่หน้าแรก</button>
         </div>
@@ -790,7 +790,7 @@
                 let data = await res.json().catch(() => ({}));
                 if (!res.ok) return;
 
-                if (data.payment_status === 'pending') {
+                if (data.payment_status === 'pending' || data.payment_status === 'failed') {
                     currentOrderId = pending.order_id;
                     currentOrderTotal = pending.total;
                     showAlert(`พบออเดอร์ #${pending.order_id} ที่ยังแนบสลิปไม่สำเร็จ ระบบเปิดหน้าชำระเงินให้อีกครั้งค่า กรุณาแนบสลิปใหม่ได้เลย`);
@@ -1330,7 +1330,11 @@
 
                     if (res.ok && data.success) {
                         document.getElementById('paymentModal').style.display = 'none';
-                        document.getElementById('successOrderInfo').innerText = `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
+                        // โหมดตรวจสลิปด้วยแอดมิน: รับสลิปแล้ว แต่ยังรอร้านเช็คยอดเข้าบัญชี
+                        document.getElementById('successTitle').innerText = data.review ? 'ส่งสลิปเรียบร้อยแล้วค่า!' : 'สั่งซื้อสำเร็จแล้วค่า!';
+                        document.getElementById('successOrderInfo').innerText = data.review
+                            ? `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}\nร้านกำลังตรวจสอบยอดโอน จะแจ้งผลให้ทราบอีกครั้งค่า`
+                            : `Order #${currentOrderId} ยอดชำระ ฿${currentOrderTotal}`;
                         document.getElementById('successModal').style.display = 'flex';
                         clearPendingOrder();
                         addToMyOrders(currentOrderId);
@@ -1340,9 +1344,16 @@
                         return true;
                     }
 
-                    // app.py ลบออเดอร์ทิ้งทันทีเมื่อสลิปไม่ผ่าน (400/404) จึงใช้ order_id เดิมส่งซ้ำไม่ได้
+                    // สลิปไม่ผ่าน: app.py เก็บออเดอร์ไว้อีก retry_minutes นาที → แนบสลิปใหม่กับออเดอร์เดิมได้เลย
+                    if (res.status === 400 && data.can_retry) {
+                        fileInput.value = '';
+                        showAlert((data.message || 'ตรวจสอบสลิปไม่สำเร็จ') + `\n\nกรุณาแนบสลิปใหม่ภายใน ${data.retry_minutes || 5} นาที หลังจากนั้นออเดอร์จะถูกยกเลิกอัตโนมัติ`);
+                        return true;
+                    }
+
+                    // ออเดอร์หมดเวลา/ถูกลบไปแล้ว (404/410) หรือ error แบบเดิม → ใช้ order_id เดิมไม่ได้
                     // → ปิดหน้าจ่ายเงิน แล้วให้ลูกค้ากด "ยืนยันออเดอร์" ใหม่ (ตะกร้ายังอยู่ครบ)
-                    if (res.status === 400 || res.status === 404) {
+                    if (res.status === 400 || res.status === 404 || res.status === 410) {
                         document.getElementById('paymentModal').style.display = 'none';
                         currentOrderId = '';
                         clearPendingOrder();
@@ -1375,7 +1386,8 @@
 
         // การ์ดแสดงสถานะออเดอร์ ใช้ร่วมกันทั้งลิสต์ "ออเดอร์ของฉัน" อัตโนมัติ และผลค้นหาด้วยเลขออเดอร์
         function buildOrderStatusCardHtml(data) {
-            let payStatus = data.payment_status === 'paid' ? 'ชำระเงินเรียบร้อย' : 'รอการชำระเงิน';
+            const PAY_STATUS_TH = { paid: 'ชำระเงินเรียบร้อย', pending_review: 'ส่งสลิปแล้ว รอร้านตรวจสอบ', failed: 'สลิปไม่ผ่าน กรุณาแนบใหม่' };
+            let payStatus = PAY_STATUS_TH[data.payment_status] || 'รอการชำระเงิน';
             let orderStatus = ORDER_STATUS_TH[data.order_status] || data.order_status || '-';
             return `
                 <div style="background: #F8F9FA; padding: 16px; border-radius: 14px; border: 1.5px solid var(--border-color); text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">

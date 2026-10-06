@@ -119,6 +119,8 @@
         }
         .badge-paid { background: #dcfce7; color: #166534; }
         .badge-unpaid { background: #fef9c3; color: #854d0e; }
+        .badge-review { background: #ffedd5; color: #c2410c; }
+        .badge-failed { background: #fee2e2; color: #b91c1c; }
 
         /* INTERACTIVE STATUS BADGE */
         .status-badge {
@@ -588,6 +590,18 @@
                         </div>
                         <button type="submit" class="btn"><i class="fas fa-save"></i> บันทึก</button>
                     </form>
+                </div>
+                <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto 20px;">
+                    <h3 style="font-size: 1.15rem; font-weight: 700;">โหมดตรวจสลิป</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; margin-bottom: 16px;">
+                        <b>ปิด (อัตโนมัติ)</b> = ตรวจยอดผ่าน Thunder API ยืนยันให้ทันที (ต้องมีเครดิต API)<br>
+                        <b>เปิด (แอดมินตรวจเอง)</b> = ระบบอ่าน QR บนสลิปเพื่อกันรูปปลอม/สลิปซ้ำ แล้วรอแอดมินเช็คยอดในแอปธนาคารและกด "ยืนยันรับเงิน"
+                    </p>
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600;">
+                        <input type="checkbox" id="slipManualToggle" onchange="saveSlipVerifyMode(this)" style="width: 20px; height: 20px;">
+                        ตรวจสลิปเองโดยแอดมิน (Manual)
+                    </label>
+                    <p id="slipModeHint" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 10px;"></p>
                 </div>
                 <div style="background: white; padding: 28px; border-radius: var(--border-radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); max-width: 800px; margin: 0 auto 20px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 12px;">
@@ -1524,9 +1538,9 @@
             let cardsHtml = '';
 
             orders.forEach(o => {
-                let isPaid = String(o.payment_status).toLowerCase() === 'paid';
-                let payBadgeClass = isPaid ? 'badge-paid' : 'badge-unpaid';
-                let payText = isPaid ? 'ชำระแล้ว' : 'รอชำระเงิน';
+                let pay = paymentBadge(o);
+                let payBadgeClass = pay.cls;
+                let payText = pay.text;
 
                 let currentStatusKey = ORDER_STATUS_CONFIG[o.order_status] ? o.order_status : 'confirmed';
                 let cfg = ORDER_STATUS_CONFIG[currentStatusKey];
@@ -1583,6 +1597,42 @@
             mobileContainer.innerHTML = cardsHtml;
         }
 
+        function paymentBadge(o) {
+            const s = String(o.payment_status || '').toLowerCase();
+            if (s === 'paid') return { cls: 'badge-paid', text: 'ชำระแล้ว' };
+            if (s === 'pending_review') return { cls: 'badge-review', text: 'รอตรวจสลิป' };
+            if (s === 'failed') return { cls: 'badge-failed', text: 'สลิปไม่ผ่าน' };
+            return { cls: 'badge-unpaid', text: 'รอชำระเงิน' };
+        }
+
+        const _paymentBusy = {};
+        async function reviewPayment(orderId, action, btn) {
+            const order = ordersById[orderId];
+            const msg = action === 'approve'
+                ? `ยืนยันว่าได้รับเงิน ฿${fmtMoney(order ? order.total : 0)} ของออเดอร์ #${orderId} เข้าบัญชีแล้ว?`
+                : `ปฏิเสธสลิปและยกเลิกออเดอร์ #${orderId}? (ออเดอร์จะถูกย้ายไปที่ประวัติ)`;
+            if (!confirm(msg)) return;
+            if (_paymentBusy[orderId]) return;
+            _paymentBusy[orderId] = true;
+            if (btn) btn.disabled = true;
+            try {
+                let res = await adminFetch(`/api/admin/orders/${encodeURIComponent(orderId)}/payment`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({action})
+                });
+                if (!res.ok) { alert('บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง'); return; }
+                closeOrderDetailModal();
+                await loadOrders();
+                showSuccessModal(action === 'approve' ? 'ยืนยันรับเงินเรียบร้อยแล้ว' : 'ปฏิเสธสลิปและยกเลิกออเดอร์แล้ว');
+            } catch (e) {
+                if (e.message !== 'Unauthorized') alert('เกิดข้อผิดพลาดในการเชื่อมต่อกับเซิร์ฟเวอร์');
+            } finally {
+                _paymentBusy[orderId] = false;
+                if (btn) btn.disabled = false;
+            }
+        }
+
         const _statusBusy = {};
         async function cycleOrderStatus(orderId, currentStatus) {
             if (_statusBusy[orderId]) return;   // กันดับเบิลคลิกระหว่างรออัปเดต
@@ -1614,12 +1664,24 @@
                 ? `<br><b>สลิปโอนเงิน:</b> <a href="javascript:void(0);" data-slip="${esc(order.slip_url)}" onclick="openSlipModal(this.dataset.slip)" style="color: var(--primary); text-decoration: underline; font-weight: 600;">[คลิกเพื่อดูรูปสลิป]</a>`
                 : '<br><b>สลิปโอนเงิน:</b> ไม่พบหลักฐานการโอน';
 
+            let pay = paymentBadge(order);
+            let transRefHtml = order.trans_ref ? `<br><b>เลขที่รายการ:</b> ${esc(order.trans_ref)}` : '';
+            // ปุ่มตรวจยอดเอง: โชว์เมื่อยังไม่ได้ "ชำระแล้ว" (รอตรวจสลิป / สลิปไม่ผ่าน / รอชำระ — เผื่อลูกค้าโอนจริงแต่ระบบตีกลับ)
+            let reviewHtml = String(order.payment_status || '').toLowerCase() !== 'paid' ? `
+                <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+                    <button type="button" class="btn" style="background: #16a34a; flex: 1; justify-content: center;" data-id="${esc(order.order_id)}" onclick="reviewPayment(this.dataset.id, 'approve', this)"><i class="fas fa-check"></i> ยืนยันรับเงิน</button>
+                    <button type="button" class="btn" style="background: #fee2e2; color: #b91c1c; flex: 1; justify-content: center;" data-id="${esc(order.order_id)}" onclick="reviewPayment(this.dataset.id, 'reject', this)"><i class="fas fa-times"></i> ปฏิเสธสลิป</button>
+                </div>` : '';
+
             infoBox.innerHTML = `
                 <b>ชื่อลูกค้า:</b> ${esc(order.customer_name)} <br>
                 <b>เบอร์โทร:</b> ${esc(fmtPhone(order.phone))} <br>
                 <b>วัน-เวลารับอาหาร:</b> ${fmtDate(order.delivery_date)} ${esc(order.delivery_time)} น. <br>
-                <b>ยอดรวมทั้งสิ้น:</b> ฿${fmtMoney(order.total)}
+                <b>ยอดรวมทั้งสิ้น:</b> ฿${fmtMoney(order.total)} <br>
+                <b>การชำระเงิน:</b> <span class="badge ${pay.cls}">${pay.text}</span>
+                ${transRefHtml}
                 ${slipHtml}
+                ${reviewHtml}
             `;
 
             let items = parseOrderItems(order);
@@ -2084,8 +2146,39 @@
                 let res = await adminFetch('/api/admin/settings');
                 let data = await res.json();
                 document.getElementById('cutoffTimeInput').value = (res.ok && data.order_cutoff_time) ? data.order_cutoff_time : '';
+                if (res.ok) renderSlipVerifyMode(data);
             } catch (e) { console.error(e); }
             loadAdminRecipients();
+        }
+
+        function renderSlipVerifyMode(data) {
+            const manual = data.slip_verify_mode === 'manual';
+            document.getElementById('slipManualToggle').checked = manual;
+            let hint = manual
+                ? '✅ ตอนนี้: แอดมินตรวจเอง — ออเดอร์ที่ส่งสลิปแล้วจะขึ้นป้าย "รอตรวจสลิป" ในหน้าออเดอร์'
+                : '⚡ ตอนนี้: ตรวจอัตโนมัติผ่าน Thunder API';
+            if (!manual && !data.thunder_configured) hint += ' — ⚠️ ยังไม่ได้ตั้งค่า THUNDER_API_URL / THUNDER_API_KEY สลิปจะไม่ผ่านทั้งหมด';
+            if (manual && !data.qr_reader_available) hint += ' — ⚠️ เซิร์ฟเวอร์ยังไม่มีตัวอ่าน QR (zxing-cpp) จะข้ามการเช็ค QR';
+            document.getElementById('slipModeHint').innerText = hint;
+        }
+
+        async function saveSlipVerifyMode(checkbox) {
+            const mode = checkbox.checked ? 'manual' : 'auto';
+            checkbox.disabled = true;
+            try {
+                let res = await adminFetch('/api/admin/settings', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({slip_verify_mode: mode})
+                });
+                if (!res.ok) { alert('บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง'); checkbox.checked = !checkbox.checked; return; }
+                let check = await adminFetch('/api/admin/settings');
+                if (check.ok) renderSlipVerifyMode(await check.json());
+            } catch (e) {
+                checkbox.checked = !checkbox.checked;
+            } finally {
+                checkbox.disabled = false;
+            }
         }
 
         async function loadAdminRecipients() {
