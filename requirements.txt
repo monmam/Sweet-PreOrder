@@ -5,3 +5,4 @@ supabase==2.31.0
 qrcode==7.4.2
 Pillow==12.3.0
 requests==2.34.2
+zxing-cpp==3.1.1

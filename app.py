@@ -24,6 +24,12 @@ try:
 except ImportError:
     _PIL_AVAILABLE = False
 
+try:
+    import zxingcpp  # อ่าน QR บนสลิปเอง (โหมด manual) — ไม่มีก็ยังรันได้ แค่ข้ามการอ่าน QR
+    _QR_READER_AVAILABLE = True
+except ImportError:
+    _QR_READER_AVAILABLE = False
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -149,6 +155,15 @@ def get_order_cutoff_time():
         return datetime.strptime(raw, '%H:%M').time()
     except ValueError:
         return None
+
+
+def get_slip_verify_mode():
+    """'auto' = ตรวจสลิปผ่าน Thunder API, 'manual' = อ่าน QR เอง แล้วให้แอดมินกดยืนยันรับเงิน
+    เปิด/ปิดได้จากหน้า admin > ตั้งค่า (เก็บในตาราง settings key 'slip_verify_mode')"""
+    mode = str(get_setting('slip_verify_mode', '')).strip().lower()
+    if mode in ('auto', 'manual'):
+        return mode
+    return 'auto' if (os.getenv('THUNDER_API_URL') and os.getenv('THUNDER_API_KEY')) else 'manual'
 
 
 # ============================================================
@@ -468,6 +483,35 @@ COMPLETED_ORDER_RETENTION_MINUTES = 90  # 1.5 ชม. — ปรับได้�
 # (delivery_date) ไปแล้วเกินกี่วัน ถือว่าค้าง/ถูกลืม ไม่มีใครมากดเปลี่ยนสถานะต่อ ให้ลบทิ้งอัตโนมัติ
 STALE_CONFIRMED_ORDER_DAYS = 1
 
+# สลิปไม่ผ่าน → ไม่ลบออเดอร์ทันที ให้ลูกค้าแนบสลิปใหม่ได้ภายในเวลานี้ (นับจากครั้งล่าสุดที่ไม่ผ่าน) แล้วค่อยลบ
+SLIP_RETRY_MINUTES = 5
+
+
+def slip_retry_expired(row, now=None):
+    """ออเดอร์ payment_status='failed' หมดเวลาแนบสลิปใหม่แล้วหรือยัง
+    ใช้ slip_failed_at ถ้ามีคอลัมน์นี้ ไม่งั้นนับจาก created_at แบบเผื่อเวลา (+10 นาทีเท่ากับเวลาจ่ายเงินปกติ)"""
+    now = now or datetime.now()
+    failed_at = str(row.get('slip_failed_at') or '')
+    limit = SLIP_RETRY_MINUTES
+    if not failed_at:
+        failed_at = str(row.get('created_at') or '')
+        limit = SLIP_RETRY_MINUTES + 10
+    try:
+        return now - datetime.strptime(failed_at[:19], '%Y-%m-%d %H:%M:%S') > timedelta(minutes=limit)
+    except ValueError:
+        return False
+
+
+def mark_slip_failed(order_id):
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        supabase.table('orders').update({'payment_status': 'failed', 'slip_failed_at': now_str}).eq('order_id', order_id).execute()
+    except Exception as e:
+        # ยังไม่ได้เพิ่มคอลัมน์ slip_failed_at ใน Supabase → บันทึกแค่สถานะ (slip_retry_expired จะนับจาก created_at แทน)
+        print('mark_slip_failed: fallback without slip_failed_at:', e)
+        supabase.table('orders').update({'payment_status': 'failed'}).eq('order_id', order_id).execute()
+    get_orders(force_refresh=True)
+
 
 def archive_and_delete_order(row):
     """ย้ายออเดอร์ไปเก็บที่ตาราง orders_archive ก่อน แล้วค่อยลบออกจาก orders — กู้คืนได้เสมอถ้าพลาด
@@ -500,6 +544,10 @@ def cleanup_pending_orders():
                         continue
                 except Exception:
                     pass
+
+            if payment_status == 'failed' and slip_retry_expired(row, now):
+                supabase.table('orders').delete().eq('order_id', row['order_id']).execute()
+                continue
 
             # ย้าย (archive) ออเดอร์ที่ "เสร็จสิ้น" แล้วเกิน COMPLETED_ORDER_RETENTION_MINUTES
             if order_status == 'completed' and completed_at_str:
@@ -929,6 +977,118 @@ def api_payment_qr():
     })
 
 
+def _parse_tlv(text):
+    out, i = {}, 0
+    while i + 4 <= len(text):
+        tag, length = text[i:i + 2], text[i + 2:i + 4]
+        if not length.isdigit():
+            break
+        n = int(length)
+        out[tag] = text[i + 4:i + 4 + n]
+        i += 4 + n
+    return out
+
+
+def read_slip_qr(file_bytes):
+    """อ่าน mini QR มาตรฐานธนาคารไทยบนสลิป (ข้างในมีแค่เลขที่รายการ + รหัสธนาคารผู้โอน ไม่มียอดเงิน)
+    คืน {'trans_ref', 'bank_code'} ถ้าเจอ, {} ถ้าไม่เจอ QR สลิป, None ถ้าเครื่องไม่มีตัวอ่าน QR"""
+    if not (_QR_READER_AVAILABLE and _PIL_AVAILABLE):
+        return None
+    try:
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(file_bytes))).convert('RGB')
+    except Exception as e:
+        print('read_slip_qr: cannot open image:', e)
+        return {}
+    candidates = [img, img.convert('L')]
+    if img.width < 1000:
+        candidates.append(img.resize((img.width * 2, img.height * 2)))
+    for candidate in candidates:
+        try:
+            results = zxingcpp.read_barcodes(candidate)
+        except Exception as e:
+            print('read_slip_qr: decode error:', e)
+            continue
+        for r in results:
+            text = (r.text or '').strip()
+            # ตัวท้ายเป็น tag 91 (CRC) ของสลิป — เช็ค CRC กัน QR ที่พิมพ์มั่วขึ้นมาเอง
+            if len(text) < 12 or text[-8:-4] != '9104' or calculate_crc16(text[:-4]) != text[-4:].upper():
+                continue
+            inner = _parse_tlv(_parse_tlv(text).get('00', ''))
+            if inner.get('02'):
+                return {'trans_ref': inner['02'], 'bank_code': inner.get('01', '')}
+    return {}
+
+
+def find_trans_ref_owner(trans_ref, exclude_order_id, orders):
+    """คืน order_id ที่ใช้เลขที่รายการนี้ไปแล้ว (ทั้งในออเดอร์ปัจจุบันและ orders_archive) หรือ None"""
+    ref = str(trans_ref or '').strip()
+    if not ref:
+        return None
+    for o in orders:
+        if o.get('order_id') != exclude_order_id and str(o.get('trans_ref') or '').strip() == ref:
+            return o.get('order_id')
+    try:
+        res = supabase.table('orders_archive').select('order_id').eq('trans_ref', ref).limit(1).execute()
+        if res.data:
+            return res.data[0].get('order_id')
+    except Exception as e:
+        print('find_trans_ref_owner archive check error:', e)
+    return None
+
+
+SLIP_FAIL_MESSAGE = 'ยอดเงินในสลิปไม่ถูกต้อง\nหรือสลิปนี้ถูกใช้งานไปแล้ว\nหรือสลิปไม่ได้โอนเข้าบัญชีร้าน'
+
+
+def slip_failed_response(order_id, reason, message=SLIP_FAIL_MESSAGE, slip_path=''):
+    """สลิปไม่ผ่าน: เก็บออเดอร์ไว้ SLIP_RETRY_MINUTES นาทีให้แนบใหม่ได้ (cleanup จะลบเองเมื่อหมดเวลา)"""
+    print(f'[slip] order={order_id} REJECTED: {reason or "unknown"} (slip kept at {slip_path})')
+    mark_slip_failed(order_id)
+    return jsonify({
+        'success': False,
+        'can_retry': True,
+        'retry_minutes': SLIP_RETRY_MINUTES,
+        'message': message,
+    }), 400
+
+
+def verify_slip_manual(order_id, target_order, slip_path, file_content, orders):
+    """โหมด manual: อ่าน QR เพื่อกันรูปที่ไม่ใช่สลิป + กันสลิปซ้ำ แล้วรอแอดมินกดยืนยันรับเงิน"""
+    qr = read_slip_qr(file_content)
+    trans_ref = None
+    if qr is None:
+        print(f'[slip] order={order_id} manual: QR reader not installed, skip QR check')
+    elif not qr:
+        return slip_failed_response(order_id, 'manual: no slip QR found',
+                                    'อ่าน QR บนสลิปไม่ได้\nกรุณาแนบรูปสลิปที่เห็น QR ชัดเจน (ไม่ครอป ไม่เบลอ)', slip_path)
+    else:
+        trans_ref = qr['trans_ref']
+        owner = find_trans_ref_owner(trans_ref, order_id, orders)
+        if owner:
+            return slip_failed_response(order_id, f'manual: duplicate trans_ref={trans_ref} (used by {owner})',
+                                        '❌ สลิปนี้ถูกใช้งานไปแล้วในระบบ ไม่สามารถนำกลับมาใช้ซ้ำได้', slip_path)
+
+    update_data = {
+        'payment_status': 'pending_review',
+        'slip_url': slip_path,
+        'api_status': 'manual',
+    }
+    if trans_ref:
+        update_data['trans_ref'] = trans_ref
+    if qr:
+        update_data['sender_bank'] = qr.get('bank_code', '')
+    supabase.table('orders').update(update_data).eq('order_id', order_id).execute()
+    get_orders(force_refresh=True)
+    print(f'[slip] order={order_id} manual: waiting for admin review (trans_ref={trans_ref})')
+    notify_admins(
+        f"🧾 สลิปรอตรวจสอบ #{order_id}\n"
+        f"ลูกค้า: {target_order.get('customer_name', '')}\n"
+        f"ยอดที่ต้องได้รับ: ฿{target_order.get('total', '')}\n"
+        f"เลขที่รายการ: {trans_ref or '-'}\n"
+        f"กรุณาเช็คยอดเข้าบัญชี แล้วกด \"ยืนยันรับเงิน\" ในหน้า admin"
+    )
+    return jsonify({'success': True, 'review': True, 'message': 'ส่งสลิปแล้ว รอร้านตรวจสอบยอด'})
+
+
 @app.route('/api/slip', methods=['POST'])
 def api_upload_slip():
     order_id = request.form.get('order_id')
@@ -943,7 +1103,18 @@ def api_upload_slip():
 
     expected_amount = float(target_order.get('total', 0))
 
+    pay_status = str(target_order.get('payment_status', '')).lower()
+    if pay_status in ('paid', 'pending_review'):
+        return jsonify({'success': False, 'message': 'ออเดอร์นี้ส่งสลิปเรียบร้อยแล้ว'}), 409
+    if pay_status == 'failed' and slip_retry_expired(target_order):
+        supabase.table('orders').delete().eq('order_id', order_id).execute()
+        get_orders(force_refresh=True)
+        return jsonify({'success': False, 'message': f'หมดเวลาแนบสลิปใหม่ ({SLIP_RETRY_MINUTES} นาที)'}), 410
+
     slip_path, file_content = upload_slip(file, order_id)
+
+    if get_slip_verify_mode() == 'manual':
+        return verify_slip_manual(order_id, target_order, slip_path, file_content, orders)
 
     thunder_url = os.getenv('THUNDER_API_URL')
     thunder_key = os.getenv('THUNDER_API_KEY')
@@ -956,6 +1127,8 @@ def api_upload_slip():
     sender_name_th = ''
     sender_name_en = ''
     sender_bank_short = ''
+    rcv_target_num = ''
+    reject_reason = ''  # เหตุผลที่สลิปไม่ผ่าน — print ลง log (Render > Logs) เพื่อไล่ปัญหาได้
 
     if thunder_url and thunder_key:
         try:
@@ -966,10 +1139,17 @@ def api_upload_slip():
             }
             payload = {
                 'image': encoded_image,
-                'checkDuplicate': True
+                # ไม่ใช้ checkDuplicate ของ Thunder: สลิปจะถูกนับว่า "ใช้แล้ว" ตั้งแต่ครั้งแรกที่ส่งตรวจ
+                # ถ้าครั้งแรกไม่ผ่าน (ออเดอร์ถูกลบ) ลูกค้าส่งสลิปเดิมซ้ำจะไม่ผ่านตลอดไป
+                # กันสลิปซ้ำด้วย trans_ref ในตาราง orders ด้านล่างแทน
+                'checkDuplicate': False
             }
             resp = requests.post(thunder_url, headers=headers, json=payload, timeout=15)
-            res_json = resp.json()
+            try:
+                res_json = resp.json()
+            except ValueError:
+                res_json = {}
+            print(f'[slip] order={order_id} thunder http={resp.status_code} body={str(res_json)[:1500]}')
             is_success = (
                 res_json.get('success') is True or
                 str(res_json.get('status', '')).lower() in ['verified', 'success', 'true', 'ok', '200', '200.0'] or
@@ -983,6 +1163,7 @@ def api_upload_slip():
                     # this is their "สลิปไม่มีข้อมูล" case: image opened fine, but no
                     # readable slip/QR data inside it (not a real slip, no QR, QR unreadable).
                     verified = False
+                    reject_reason = 'thunder returned empty data (QR unreadable)'
                 else:
                     trans_ref = data_field.get('transRef') or res_json.get('transRef')
                     slip_date = data_field.get('date', '')  # ISO 8601 date from the slip itself, per Thunder v1 spec
@@ -1027,9 +1208,10 @@ def api_upload_slip():
                             common_digits = sum(1 for a, b in zip(shop_digits[-4:], rcv_digits[-4:]) if a == b)
                             if len(shop_digits) >= 4 and common_digits == 0 and shop_digits not in rcv_digits and rcv_digits not in shop_digits:
                                 verified = False
+                                reject_reason = f'receiver number mismatch: slip={rcv_target_num!r} shop=PROMPTPAY_NUMBER'
 
                     if shop_name and verified:
-                        prefixes = ['นาย', 'นาง', 'น.ส.', 'นางสาว', 'mr.', 'ms.', 'mrs.']
+                        prefixes = ['นางสาว', 'น.ส.', 'นาย', 'นาง', 'mrs.', 'mr.', 'ms.', 'miss']
                         shop_lower = shop_name.lower()
                         rcv_th_lower = rcv_name_th.lower()
                         rcv_en_lower = rcv_name_en.lower()
@@ -1051,27 +1233,27 @@ def api_upload_slip():
                             short_shop_name = shop_name.split()[0] + ' ' + shop_name.split()[-1][0] if len(shop_name.split()) > 1 else shop_name
                             if short_shop_name.lower() not in rcv_name_th.lower():
                                 verified = False
+                                reject_reason = f'receiver name mismatch: slip_th={rcv_name_th!r} slip_en={rcv_name_en!r} shop=SHOP_ACCOUNT_NAME'
+            else:
+                reject_reason = f'thunder not success: http={resp.status_code}'
         except Exception as e:
             print('Slip Verification Error:', e)
             verified = False
+            reject_reason = f'exception: {e}'
     else:
         verified = False
+        reject_reason = 'THUNDER_API_URL / THUNDER_API_KEY not set'
 
     if verified and paid_amount > 0:
         if abs(paid_amount - expected_amount) > 0.05:
             verified = False
+            reject_reason = f'amount mismatch: slip={paid_amount} expected={expected_amount}'
 
     if verified and trans_ref:
-        for o in orders:
-            existing_trans_ref = str(o.get('trans_ref', '')).strip()
-            if existing_trans_ref and existing_trans_ref == str(trans_ref).strip():
-                verified = False
-                supabase.table('orders').delete().eq('order_id', order_id).execute()
-                get_orders(force_refresh=True)
-                return jsonify({
-                    'success': False,
-                    'message': '❌ สลิปนี้ถูกใช้งานไปแล้วในระบบ ไม่สามารถนำกลับมาใช้ซ้ำได้'
-                }), 400
+        owner = find_trans_ref_owner(trans_ref, order_id, orders)
+        if owner:
+            return slip_failed_response(order_id, f'duplicate trans_ref={trans_ref} (used by {owner})',
+                                        '❌ สลิปนี้ถูกใช้งานไปแล้วในระบบ ไม่สามารถนำกลับมาใช้ซ้ำได้', slip_path)
 
     if verified:
         update_data = {
@@ -1097,12 +1279,7 @@ def api_upload_slip():
             line_push_message(order_row_for_line['line_user_id'], f"✅ ตรวจสอบสลิปสำเร็จ ออเดอร์ #{order_id} ชำระเงินเรียบร้อยแล้วค่ะ")
         return jsonify({'success': True, 'message': 'Payment verified successfully'})
     else:
-        supabase.table('orders').delete().eq('order_id', order_id).execute()
-        get_orders(force_refresh=True)
-        return jsonify({
-            'success': False,
-            'message': 'ยอดเงินในสลิปไม่ถูกต้อง\nหรือสลิปนี้ถูกใช้งานไปแล้ว\nหรือสลิปไม่ได้โอนเข้าบัญชีร้าน'
-        }), 400
+        return slip_failed_response(order_id, reject_reason, slip_path=slip_path)
 
 
 @app.route('/api/order/status/<order_id>', methods=['GET'])
@@ -1402,6 +1579,40 @@ def api_admin_orders():
         return jsonify({'error': 'Order not found'}), 404
 
 
+@app.route('/api/admin/orders/<order_id>/payment', methods=['POST'])
+def api_admin_order_payment(order_id):
+    """แอดมินตรวจยอดในแอปธนาคารเองแล้วกด ยืนยันรับเงิน (approve) หรือ ปฏิเสธสลิป (reject)"""
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    action = (request.json or {}).get('action')
+    res = supabase.table('orders').select('*').eq('order_id', order_id).limit(1).execute()
+    if not res.data:
+        return jsonify({'error': 'Order not found'}), 404
+    row = res.data[0]
+
+    if action == 'approve':
+        if str(row.get('payment_status', '')).lower() == 'paid':
+            return jsonify({'success': True})
+        supabase.table('orders').update({
+            'payment_status': 'paid',
+            'paid_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'paid_amount': row.get('total'),
+        }).eq('order_id', order_id).execute()
+        get_orders(force_refresh=True)
+        line_push_message(row.get('line_user_id'), f"✅ ร้านตรวจสอบยอดแล้ว ออเดอร์ #{order_id} ชำระเงินเรียบร้อยแล้วค่ะ")
+        return jsonify({'success': True})
+
+    if action == 'reject':
+        supabase.table('orders').update({'payment_status': 'rejected'}).eq('order_id', order_id).execute()
+        row['payment_status'] = 'rejected'
+        archive_and_delete_order(row)  # เก็บไว้ใน orders_archive เผื่อต้องย้อนดู
+        get_orders(force_refresh=True)
+        line_push_message(row.get('line_user_id'), f"❌ ออเดอร์ #{order_id} ตรวจสอบยอดโอนไม่ผ่าน ออเดอร์ถูกยกเลิก หากโอนเงินแล้วกรุณาติดต่อร้านค่ะ")
+        return jsonify({'success': True})
+
+    return jsonify({'error': 'action ต้องเป็น approve หรือ reject'}), 400
+
+
 @app.route('/api/admin/delivery-times', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def api_admin_delivery_times():
     if not session.get('admin_logged_in'):
@@ -1451,16 +1662,26 @@ def api_admin_settings():
         cutoff = get_order_cutoff_time()
         return jsonify({
             'order_cutoff_time': cutoff.strftime('%H:%M') if cutoff else '',
+            'slip_verify_mode': get_slip_verify_mode(),
+            'thunder_configured': bool(os.getenv('THUNDER_API_URL') and os.getenv('THUNDER_API_KEY')),
+            'qr_reader_available': _QR_READER_AVAILABLE,
         })
 
+    # บันทึกเฉพาะ key ที่ส่งมา — ฟอร์มเวลาปิดรับ กับสวิตช์โหมดตรวจสลิป บันทึกแยกกันได้
     data = request.json or {}
-    raw_cutoff = str(data.get('order_cutoff_time', '')).strip()
-    if raw_cutoff:
-        try:
-            datetime.strptime(raw_cutoff, '%H:%M')
-        except ValueError:
-            return jsonify({'error': 'รูปแบบเวลาไม่ถูกต้อง กรุณาระบุเป็น HH:MM'}), 400
-    set_setting('order_cutoff_time', raw_cutoff)
+    if 'order_cutoff_time' in data:
+        raw_cutoff = str(data.get('order_cutoff_time') or '').strip()
+        if raw_cutoff:
+            try:
+                datetime.strptime(raw_cutoff, '%H:%M')
+            except ValueError:
+                return jsonify({'error': 'รูปแบบเวลาไม่ถูกต้อง กรุณาระบุเป็น HH:MM'}), 400
+        set_setting('order_cutoff_time', raw_cutoff)
+    if 'slip_verify_mode' in data:
+        mode = str(data.get('slip_verify_mode') or '').strip().lower()
+        if mode not in ('auto', 'manual'):
+            return jsonify({'error': 'slip_verify_mode ต้องเป็น auto หรือ manual'}), 400
+        set_setting('slip_verify_mode', mode)
     return jsonify({'success': True})
 
 
